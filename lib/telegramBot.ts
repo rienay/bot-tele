@@ -1,7 +1,15 @@
 import { Bot } from 'grammy';
+import dns from 'dns';
 import { parseTextMessage, parseReceiptImage } from './gemini';
 import { appendTransaction, getMonthSummary } from './googleSheets';
 import { uploadReceiptToDrive } from './googleDrive';
+
+// Paksa IPv4 untuk menghindari timeout koneksi IPv6 ke server Telegram di jaringan Windows/ISP lokal
+try {
+  dns.setDefaultResultOrder('ipv4first');
+} catch (e) {
+  // Abaikan jika tidak didukung
+}
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 if (!token) {
