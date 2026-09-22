@@ -294,33 +294,35 @@ bot.on('message:text', async (ctx) => {
     // Simpan ke Google Sheets
     await appendTransaction(parsed);
 
+    // Kirim konfirmasi SEGERA (tidak menunggu rekap)
     const emoji = parsed.type === 'Pemasukan' ? '🟢' : '🔴';
-
-    // Ambil ringkasan semua transaksi untuk ditampilkan setelah transaksi dicatat
-    let miniRekap = '';
-    try {
-      const summary = await getMonthSummary();
-      const saldoLabel = summary.saldo >= 0 ? '💰 *Sisa:*' : '🔻 *Defisit:*';
-      miniRekap =
-        `\n\n━━━━━━━━━━━━━━━━━━━━━\n` +
-        `📊 *Rekap Transaksi:*\n` +
-        `🟢 Masuk: ${formatRupiah(summary.totalPemasukan)}\n` +
-        `🔴 Keluar: ${formatRupiah(summary.totalPengeluaran)}\n` +
-        `${saldoLabel} ${formatRupiah(Math.abs(summary.saldo))}`;
-    } catch {
-      // Jika gagal ambil rekap, tidak mengganggu pesan utama
-    }
-
     await ctx.reply(
       `✅ *Transaksi Berhasil Dicatat!*\n\n` +
         `📅 *Tanggal:* ${parsed.date}\n` +
         `${emoji} *Jenis:* ${parsed.type}\n` +
         `📂 *Kategori:* ${parsed.category}\n` +
         `💰 *Nominal:* ${formatRupiah(parsed.amount)}\n` +
-        `📝 *Keterangan:* ${parsed.description}` +
-        miniRekap,
+        `📝 *Keterangan:* ${parsed.description}`,
       { parse_mode: 'Markdown' }
     );
+
+    // Kirim rekap di background (tidak memblokir respon utama)
+    (async () => {
+      try {
+        const summary = await getMonthSummary();
+        const saldoLabel = summary.saldo >= 0 ? '💰 *Sisa:*' : '🔻 *Defisit:*';
+        await ctx.reply(
+          `━━━━━━━━━━━━━━━━━━━━━\n` +
+          `📊 *Rekap Transaksi:*\n` +
+          `🟢 Masuk: ${formatRupiah(summary.totalPemasukan)}\n` +
+          `🔴 Keluar: ${formatRupiah(summary.totalPengeluaran)}\n` +
+          `${saldoLabel} ${formatRupiah(Math.abs(summary.saldo))}`,
+          { parse_mode: 'Markdown' }
+        );
+      } catch {
+        // Jika rekap gagal, tidak mengganggu pesan utama
+      }
+    })();
   } catch (error: any) {
     console.error('Error processing text transaction:', error);
     await ctx.reply(
@@ -387,24 +389,8 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
     // 1. Simpan segera ke Google Sheets
     const rowNumber = await appendTransaction(parsed);
 
-    // 2. Beri notifikasi instan ke pengguna bahwa transaksi sudah tercatat!
+    // 2. Kirim konfirmasi SEGERA ke pengguna (tidak menunggu rekap & upload Drive)
     const emoji = parsed.type === 'Pemasukan' ? '🟢' : '🔴';
-
-    // Ambil ringkasan semua transaksi untuk ditampilkan setelah transaksi dicatat
-    let miniRekap = '';
-    try {
-      const summary = await getMonthSummary();
-      const saldoLabel = summary.saldo >= 0 ? '💰 *Sisa:*' : '🔻 *Defisit:*';
-      miniRekap =
-        `\n\n━━━━━━━━━━━━━━━━━━━━━\n` +
-        `📊 *Rekap Transaksi:*\n` +
-        `🟢 Masuk: ${formatRupiah(summary.totalPemasukan)}\n` +
-        `🔴 Keluar: ${formatRupiah(summary.totalPengeluaran)}\n` +
-        `${saldoLabel} ${formatRupiah(Math.abs(summary.saldo))}`;
-    } catch {
-      // Jika gagal ambil rekap, tidak mengganggu pesan utama
-    }
-
     await ctx.reply(
       `🧾 *Transaksi Berhasil Dicatat!*\n\n` +
         `📅 *Tanggal:* ${parsed.date}\n` +
@@ -412,13 +398,29 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
         `📂 *Kategori:* ${parsed.category}\n` +
         `💰 *Total Nominal:* ${formatRupiah(parsed.amount)}\n` +
         `📝 *Keterangan:* ${parsed.description}\n\n` +
-        `⏳ _Foto sedang diunggah ke Google Drive di latar belakang..._` +
-        miniRekap,
+        `⏳ _Foto sedang diunggah ke Google Drive di latar belakang..._`,
       { parse_mode: 'Markdown' }
     );
 
-    // 3. Upload ke Google Drive secara asinkron (background) agar tidak menghambat antrean foto berikutnya
+    // 3. Kirim rekap & upload Drive di background (tidak memblokir respon utama)
     (async () => {
+      // Rekap transaksi
+      try {
+        const summary = await getMonthSummary();
+        const saldoLabel = summary.saldo >= 0 ? '💰 *Sisa:*' : '🔻 *Defisit:*';
+        await ctx.reply(
+          `━━━━━━━━━━━━━━━━━━━━━\n` +
+          `📊 *Rekap Transaksi:*\n` +
+          `🟢 Masuk: ${formatRupiah(summary.totalPemasukan)}\n` +
+          `🔴 Keluar: ${formatRupiah(summary.totalPengeluaran)}\n` +
+          `${saldoLabel} ${formatRupiah(Math.abs(summary.saldo))}`,
+          { parse_mode: 'Markdown' }
+        );
+      } catch {
+        // Jika rekap gagal, tidak mengganggu
+      }
+
+      // Upload ke Google Drive
       try {
         const driveLink = await uploadReceiptToDrive(buffer, fileName, mimeType);
         if (driveLink) {
