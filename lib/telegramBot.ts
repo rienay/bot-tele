@@ -296,11 +296,10 @@ bot.on('message:text', async (ctx) => {
 
     const emoji = parsed.type === 'Pemasukan' ? '🟢' : '🔴';
 
-    // Ambil ringkasan bulan ini untuk ditampilkan setelah transaksi dicatat
-    const currentYearMonth = getLocalTodayDateString().slice(0, 7); // YYYY-MM
+    // Ambil ringkasan semua transaksi untuk ditampilkan setelah transaksi dicatat
     let miniRekap = '';
     try {
-      const summary = await getMonthSummary(currentYearMonth);
+      const summary = await getMonthSummary();
       const saldoLabel = summary.saldo >= 0 ? '💰 *Sisa:*' : '🔻 *Defisit:*';
       miniRekap =
         `\n\n━━━━━━━━━━━━━━━━━━━━━\n` +
@@ -391,11 +390,10 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
     // 2. Beri notifikasi instan ke pengguna bahwa transaksi sudah tercatat!
     const emoji = parsed.type === 'Pemasukan' ? '🟢' : '🔴';
 
-    // Ambil ringkasan bulan ini untuk ditampilkan setelah transaksi dicatat
-    const currentYearMonth = getLocalTodayDateString().slice(0, 7); // YYYY-MM
+    // Ambil ringkasan semua transaksi untuk ditampilkan setelah transaksi dicatat
     let miniRekap = '';
     try {
-      const summary = await getMonthSummary(currentYearMonth);
+      const summary = await getMonthSummary();
       const saldoLabel = summary.saldo >= 0 ? '💰 *Sisa:*' : '🔻 *Defisit:*';
       miniRekap =
         `\n\n━━━━━━━━━━━━━━━━━━━━━\n` +
