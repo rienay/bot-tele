@@ -60,8 +60,8 @@ bot.command(['start', 'help'], async (ctx) => {
   );
 });
 
-// Command: /rekap
-bot.command('rekap', async (ctx) => {
+// Command: /rekap & /recap
+bot.command(['rekap', 'recap'], async (ctx) => {
   try {
     await ctx.replyWithChatAction('typing');
 
@@ -125,7 +125,50 @@ bot.command('rekap', async (ctx) => {
 // Handler: Pesan Teks
 bot.on('message:text', async (ctx) => {
   const text = ctx.message.text.trim();
-  if (text.startsWith('/')) return; // Abaikan slash commands
+
+  // Jika pengguna mengetik 'rekap' atau 'recap' tanpa tanda slash
+  if (text.toLowerCase().startsWith('rekap') || text.toLowerCase().startsWith('recap')) {
+    // Arahkan ke handler rekap
+    const parts = text.split(' ').slice(1).join(' ').trim().toLowerCase();
+    const monthMap: Record<string, string> = {
+      januari: '01', jan: '01',
+      februari: '02', feb: '02',
+      maret: '03', mar: '03',
+      april: '04', apr: '04',
+      mei: '05',
+      juni: '06', jun: '06',
+      juli: '07', jul: '07',
+      agustus: '08', agu: '08', agt: '08',
+      september: '09', sep: '09',
+      oktober: '10', okt: '10',
+      november: '11', nov: '11',
+      desember: '12', des: '12',
+    };
+    const currentYear = new Date().getFullYear();
+    let targetPrefix: string | undefined;
+    if (parts && monthMap[parts]) {
+      targetPrefix = `${currentYear}-${monthMap[parts]}`;
+    }
+    const summary = await getMonthSummary(targetPrefix);
+    let msg = `📊 *Rekap Keuangan (${summary.bulan})*\n\n`;
+    msg += `🟢 *Pemasukan:* ${formatRupiah(summary.totalPemasukan)}\n`;
+    msg += `🔴 *Pengeluaran:* ${formatRupiah(summary.totalPengeluaran)}\n`;
+    msg += `💰 *Sisa Saldo Periode Ini:* ${formatRupiah(summary.saldo)}\n`;
+    msg += `📝 *Jumlah Transaksi:* ${summary.count} transaksi\n\n`;
+    msg += `━━━━━━━━━━━━━━━━━━━\n`;
+    msg += `🌐 *Akumulasi Kas (Semua Periode):*\n`;
+    msg += `🟢 *Total Uang Masuk:* ${formatRupiah(summary.totalAllTimePemasukan)}\n`;
+    msg += `🔴 *Total Uang Keluar:* ${formatRupiah(summary.totalAllTimePengeluaran)}\n`;
+    msg += `💵 *Sisa Saldo Kas Riil:* ${formatRupiah(summary.saldoAllTime)}\n`;
+    msg += `📑 *Total Seluruh Transaksi:* ${summary.totalAllTimeCount} transaksi`;
+    await ctx.reply(msg, { parse_mode: 'Markdown' });
+    return;
+  }
+
+  if (text.startsWith('/')) {
+    await ctx.reply('❓ Perintah tidak dikenali. Ketik /help untuk melihat panduan atau /rekap untuk melihat ringkasan keuangan.');
+    return;
+  }
 
   try {
     await ctx.replyWithChatAction('typing');
