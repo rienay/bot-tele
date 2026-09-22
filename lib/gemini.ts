@@ -142,9 +142,11 @@ export async function parseReceiptImage(
 
   const todayStr = getLocalTodayDateString(referenceDate);
 
-  const prompt = `Analisis foto ini. Foto ini bisa berupa:
+  const prompt = `Analisis foto ini. Foto ini bisa berupa berbagai macam bukti transaksi keuangan:
 1. BUKTI TRANSFER BANK / E-WALLET / QRIS (BCA Mobile, Mandiri Livin, BRImo, BNI, Seabank, Bank Jago, GoPay, OVO, DANA, ShopeePay, Flip, dll).
-2. STRUK / NOTA BELANJA (struk kasir minimarket, resto, toko, SPBU, invoice, dll).
+2. STRUK KASIR / NOTA MESIN PRINT (struk minimarket, resto, toko, SPBU, tiket, parkir, dll).
+3. NOTA TULISAN TANGAN / BON WARUNG / KUITANSI KERTAS (bon toko kelontong, pasar, toko ATK, toko bangunan/kayu, kuitansi manual, nota sewa/rental alat).
+4. INVOICE / FAKTUR RESMI (lembar tagihan, purchase order, surat jalan dengan harga).
 
 Tanggal referensi hari ini: ${todayStr} (WIB).
 Caption teks dari pengguna (SANGAT PENTING jika ada): "${caption || '-'}"
