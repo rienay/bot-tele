@@ -51,8 +51,8 @@ Aturan Penting:
    - Jika tanggal spesifik seperti "tgl 5 agustus", "10/09/2026", "2 hari lalu", konversikan ke format standar YYYY-MM-DD.
    - Jika tidak ada tanggal yang disebut, gunakan tanggal hari ini: ${todayStr}.
 3. Tipe:
-   - "Pemasukan": jika ada indikasi gaji, freelance, jualan, dapat uang, transfer masuk, piutang dibayar, dividen, dll.
-   - "Pengeluaran": jika membeli sesuatu, makan, bensin, bayar tagihan, belanja, dll.
+   - "Pemasukan": jika ada uang masuk (gaji, transfer masuk, penjualan, pinjam uang/utang baru, atau orang bayar piutang ke kita).
+   - "Pengeluaran": jika ada uang keluar (beli barang, bayar konsumsi, bensin, pinjamkan uang ke orang/kasbon/piutang, atau bayar cicilan utang kita).
 4. Kategori: WAJIB pilih salah satu dari kategori berikut yang paling relevan:
    - "Konsumsi": untuk makanan, minuman, snack, catering, kopi, air mineral, dll.
    - "Perlengkapan": untuk alat, ATK, perlengkapan acara/kantor, banner, lakban, kabel, sewa alat, dll.
@@ -61,8 +61,10 @@ Aturan Penting:
    - "Media": untuk publikasi, dokumentasi, cetak poster/flyer, promosi, kamera, konten, dll.
    - "Peserta": untuk biaya terkait peserta, registrasi/tiket peserta, id card, sertifikat, merchandise/souvenir peserta, dll.
    - "Bendahara": untuk kas, uang modal/kas kecil, transfer dana, simpanan, admin bank, dll.
+   - "Utang": untuk uang yang kita pinjam dari orang/pihak lain, atau pelunasan/cicilan utang kita ke orang lain.
+   - "Piutang": untuk uang yang kita pinjamkan/kasbon ke orang lain, atau penerimaan uang saat orang melunasi utangnya ke kita.
    - "Lain-lain": hanya jika benar-benar tidak cocok dengan kategori di atas.
-5. Keterangan: Deskripsi singkat dan jelas tentang transaksi tersebut.
+5. Keterangan: Deskripsi singkat dan jelas tentang transaksi tersebut (sertakan nama orang yang berutang/piutang jika ada di pesan).
 
 Pesan pengguna: "${text}"
 
@@ -130,6 +132,8 @@ Tugas:
    - "Peserta" (souvenir, seminar kit, nametag, sertifikat)
    - "Honor" (tanda terima jasa, honorarium)
    - "Bendahara" (biaya transfer, admin, penarikan kas)
+   - "Utang" (bukti pembayaran utang atau pinjaman)
+   - "Piutang" (bukti pinjaman ke pihak lain atau pelunasan)
    - "Lain-lain"
 5. Tipe: Secara default adalah "Pengeluaran".
 
