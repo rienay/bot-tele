@@ -304,7 +304,7 @@ bot.on('message:text', async (ctx) => {
       const saldoLabel = summary.saldo >= 0 ? '💰 *Sisa:*' : '🔻 *Defisit:*';
       miniRekap =
         `\n\n━━━━━━━━━━━━━━━━━━━━━\n` +
-        `📊 *Rekap Bulan Ini:*\n` +
+        `📊 *Rekap Transaksi:*\n` +
         `🟢 Masuk: ${formatRupiah(summary.totalPemasukan)}\n` +
         `🔴 Keluar: ${formatRupiah(summary.totalPengeluaran)}\n` +
         `${saldoLabel} ${formatRupiah(Math.abs(summary.saldo))}`;
@@ -399,7 +399,7 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
       const saldoLabel = summary.saldo >= 0 ? '💰 *Sisa:*' : '🔻 *Defisit:*';
       miniRekap =
         `\n\n━━━━━━━━━━━━━━━━━━━━━\n` +
-        `📊 *Rekap Bulan Ini:*\n` +
+        `📊 *Rekap Transaksi:*\n` +
         `🟢 Masuk: ${formatRupiah(summary.totalPemasukan)}\n` +
         `🔴 Keluar: ${formatRupiah(summary.totalPengeluaran)}\n` +
         `${saldoLabel} ${formatRupiah(Math.abs(summary.saldo))}`;
