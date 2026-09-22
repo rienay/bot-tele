@@ -1,0 +1,27 @@
+{
+  "name": "telegram-finance-bot",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "bot:dev": "tsx --env-file=.env.local scripts/local-poll.ts",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.24.0",
+    "googleapis": "^144.0.0",
+    "grammy": "^1.35.0",
+    "next": "^15.2.1",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "@types/react": "^19.0.10",
+    "@types/react-dom": "^19.0.4",
+    "tsx": "^4.23.15",
+    "typescript": "^5.8.2"
+  }
+}

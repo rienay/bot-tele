@@ -1,0 +1,203 @@
+import { Bot } from 'grammy';
+import { parseTextMessage, parseReceiptImage } from './gemini';
+import { appendTransaction, getMonthSummary } from './googleSheets';
+import { uploadReceiptToDrive } from './googleDrive';
+
+const token = process.env.TELEGRAM_BOT_TOKEN;
+if (!token) {
+  console.warn('Peringatan: TELEGRAM_BOT_TOKEN belum diisi di environment variables.');
+}
+
+export const bot = new Bot(token || 'dummy_token');
+
+function formatRupiah(amount: number): string {
+  return new Intl.NumberFormat('id-ID', {
+    style: 'currency',
+    currency: 'IDR',
+    maximumFractionDigits: 0,
+  }).format(amount);
+}
+
+// Middleware Keamanan: Whitelist Telegram User ID
+bot.use(async (ctx, next) => {
+  const allowed = process.env.ALLOWED_TELEGRAM_USER_IDS;
+  if (allowed && allowed.trim() !== '') {
+    const list = allowed.split(',').map((id) => id.trim());
+    const senderId = String(ctx.from?.id);
+    if (!list.includes(senderId)) {
+      await ctx.reply(
+        `⛔ *Akses Dibatasi*\nID Telegram Anda adalah: \`${senderId}\`\n\nUntuk mengizinkan akun ini menggunakan bot, tambahkan ID di atas ke variabel \`ALLOWED_TELEGRAM_USER_IDS\` di file konfigurasi.`,
+        { parse_mode: 'Markdown' }
+      );
+      return;
+    }
+  }
+  await next();
+});
+
+// Command: /start & /help
+bot.command(['start', 'help'], async (ctx) => {
+  const senderId = ctx.from?.id;
+  await ctx.reply(
+    `👋 *Halo! Saya Bot Pencatat Keuangan Pribadi Anda.*\n\n` +
+      `💡 *Cara Penggunaan:*\n` +
+      `1. *Kirim Teks Bebas:* Langsung chat pengeluaran atau pemasukan Anda.\n` +
+      `   • \`makan siang padang 35rb\`\n` +
+      `   • \`kemarin beli bensin 50000\`\n` +
+      `   • \`dapat transfer freelance 2.5jt tanggal 15 agustus\`\n\n` +
+      `2. *Kirim Foto Nota / Struk:* Cukup kirim foto struk belanjaan Anda. AI akan otomatis membaca nominal, tanggal, dan nama toko, lalu menyimpannya ke Google Drive & Sheets!\n\n` +
+      `3. *Cek Ringkasan:* Ketik /rekap untuk melihat total pengeluaran & pemasukan bulan ini.\n\n` +
+      `🆔 _ID Telegram Anda: \`${senderId}\`_`,
+    { parse_mode: 'Markdown' }
+  );
+});
+
+// Command: /rekap
+bot.command('rekap', async (ctx) => {
+  try {
+    await ctx.replyWithChatAction('typing');
+    const summary = await getMonthSummary();
+    await ctx.reply(
+      `📊 *Ringkasan Keuangan (${summary.bulan})*\n\n` +
+        `🟢 *Total Pemasukan:* ${formatRupiah(summary.totalPemasukan)}\n` +
+        `🔴 *Total Pengeluaran:* ${formatRupiah(summary.totalPengeluaran)}\n` +
+        `💰 *Sisa Saldo:* ${formatRupiah(summary.saldo)}\n\n` +
+        `📝 *Total Transaksi Tercatat:* ${summary.count} transaksi.`,
+      { parse_mode: 'Markdown' }
+    );
+  } catch (error: any) {
+    console.error('Error saat membuat rekap:', error);
+    await ctx.reply(`⚠️ Gagal mengambil rekap: ${error?.message || 'Terjadi kesalahan sistem.'}`);
+  }
+});
+
+// Handler: Pesan Teks
+bot.on('message:text', async (ctx) => {
+  const text = ctx.message.text.trim();
+  if (text.startsWith('/')) return; // Abaikan slash commands
+
+  try {
+    await ctx.replyWithChatAction('typing');
+    const parsed = await parseTextMessage(text);
+
+    if (!parsed) {
+      await ctx.reply(
+        `🤔 Maaf, saya belum mengenali catatan keuangan dari pesan tersebut.\n` +
+          `Contoh yang bisa dipahami:\n` +
+          `• \`Makan sate 45rb\`\n` +
+          `• \`Kemarin ganti oli motor 75.000\`\n` +
+          `• \`Gaji kantor 8jt tanggal 25\``
+      );
+      return;
+    }
+
+    // Simpan ke Google Sheets
+    await appendTransaction(parsed);
+
+    const emoji = parsed.type === 'Pemasukan' ? '🟢' : '🔴';
+    await ctx.reply(
+      `✅ *Transaksi Berhasil Dicatat!*\n\n` +
+        `📅 *Tanggal:* ${parsed.date}\n` +
+        `${emoji} *Jenis:* ${parsed.type}\n` +
+        `📂 *Kategori:* ${parsed.category}\n` +
+        `💰 *Nominal:* ${formatRupiah(parsed.amount)}\n` +
+        `📝 *Keterangan:* ${parsed.description}`,
+      { parse_mode: 'Markdown' }
+    );
+  } catch (error: any) {
+    console.error('Error processing text transaction:', error);
+    await ctx.reply(
+      `❌ Gagal mencatat transaksi: ${error?.message || 'Terjadi gangguan internal.'}`
+    );
+  }
+});
+
+// Handler: Foto Nota / Struk
+bot.on(['message:photo', 'message:document'], async (ctx) => {
+  try {
+    let fileId: string | undefined;
+    let fileName = `nota_${Date.now()}.jpg`;
+    let mimeType = 'image/jpeg';
+
+    if (ctx.message.photo) {
+      const photos = ctx.message.photo;
+      const largestPhoto = photos[photos.length - 1];
+      fileId = largestPhoto.file_id;
+    } else if (ctx.message.document) {
+      const doc = ctx.message.document;
+      if (doc.mime_type?.startsWith('image/')) {
+        fileId = doc.file_id;
+        fileName = doc.file_name || fileName;
+        mimeType = doc.mime_type;
+      }
+    }
+
+    if (!fileId) {
+      await ctx.reply('⚠️ Mohon kirimkan file berupa gambar foto nota/struk belanja.');
+      return;
+    }
+
+    await ctx.reply('🔍 *Menganalisis foto nota & mengunggah ke Google Drive...*', {
+      parse_mode: 'Markdown',
+    });
+    await ctx.replyWithChatAction('upload_photo');
+
+    // Download file dari server Telegram
+    const file = await ctx.api.getFile(fileId);
+    if (!file.file_path) {
+      throw new Error('Tidak dapat mengunduh file dari Telegram.');
+    }
+
+    const fileUrl = `https://api.telegram.org/file/bot${process.env.TELEGRAM_BOT_TOKEN}/${file.file_path}`;
+    const response = await fetch(fileUrl);
+    if (!response.ok) {
+      throw new Error(`Gagal fetch file dari Telegram: ${response.statusText}`);
+    }
+
+    const arrayBuffer = await response.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+
+    // Proses OCR dengan Gemini dan Upload ke Drive secara paralel
+    const [driveLink, parsed] = await Promise.all([
+      uploadReceiptToDrive(buffer, fileName, mimeType).catch((err) => {
+        console.error('Gagal upload ke Drive:', err);
+        return null;
+      }),
+      parseReceiptImage(buffer, mimeType, ctx.message.caption),
+    ]);
+
+    if (!parsed) {
+      await ctx.reply(
+        '⚠️ Gambar tidak terdeteksi sebagai nota/struk belanja yang valid atau nominal total tidak terbaca jelas. Mohon pastikan foto cukup terang dan mencakup bagian Total.'
+      );
+      return;
+    }
+
+    if (driveLink) {
+      parsed.noteLink = driveLink;
+    }
+
+    // Simpan ke Google Sheets
+    await appendTransaction(parsed);
+
+    const emoji = parsed.type === 'Pemasukan' ? '🟢' : '🔴';
+    let replyMsg =
+      `🧾 *Nota Berhasil Dicatat!*\n\n` +
+      `📅 *Tanggal:* ${parsed.date}\n` +
+      `${emoji} *Jenis:* ${parsed.type}\n` +
+      `📂 *Kategori:* ${parsed.category}\n` +
+      `💰 *Total Nominal:* ${formatRupiah(parsed.amount)}\n` +
+      `📝 *Keterangan:* ${parsed.description}\n`;
+
+    if (driveLink) {
+      replyMsg += `📎 *Bukti Nota:* [Buka di Google Drive](${driveLink})\n`;
+    }
+
+    await ctx.reply(replyMsg, { parse_mode: 'Markdown', link_preview_options: { is_disabled: true } });
+  } catch (error: any) {
+    console.error('Error processing receipt:', error);
+    await ctx.reply(
+      `❌ Gagal memproses nota: ${error?.message || 'Terjadi kesalahan sistem.'}`
+    );
+  }
+});
