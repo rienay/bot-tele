@@ -1,7 +1,7 @@
 import { Bot } from 'grammy';
 import dns from 'dns';
 import { google } from 'googleapis';
-import { parseTextMessage, parseReceiptImage } from './gemini';
+import { parseTextMessage, parseReceiptImage, getLocalTodayDateString } from './gemini';
 import { appendTransaction, getMonthSummary, updateTransactionNoteLink } from './googleSheets';
 import { uploadReceiptToDrive } from './googleDrive';
 import { formatPrivateKey, getGoogleAuth } from './googleAuth';
@@ -295,13 +295,31 @@ bot.on('message:text', async (ctx) => {
     await appendTransaction(parsed);
 
     const emoji = parsed.type === 'Pemasukan' ? '🟢' : '🔴';
+
+    // Ambil ringkasan bulan ini untuk ditampilkan setelah transaksi dicatat
+    const currentYearMonth = getLocalTodayDateString().slice(0, 7); // YYYY-MM
+    let miniRekap = '';
+    try {
+      const summary = await getMonthSummary(currentYearMonth);
+      const saldoLabel = summary.saldo >= 0 ? '💰 *Sisa:*' : '🔻 *Defisit:*';
+      miniRekap =
+        `\n\n━━━━━━━━━━━━━━━━━━━━━\n` +
+        `📊 *Rekap Bulan Ini:*\n` +
+        `🟢 Masuk: ${formatRupiah(summary.totalPemasukan)}\n` +
+        `🔴 Keluar: ${formatRupiah(summary.totalPengeluaran)}\n` +
+        `${saldoLabel} ${formatRupiah(Math.abs(summary.saldo))}`;
+    } catch {
+      // Jika gagal ambil rekap, tidak mengganggu pesan utama
+    }
+
     await ctx.reply(
       `✅ *Transaksi Berhasil Dicatat!*\n\n` +
         `📅 *Tanggal:* ${parsed.date}\n` +
         `${emoji} *Jenis:* ${parsed.type}\n` +
         `📂 *Kategori:* ${parsed.category}\n` +
         `💰 *Nominal:* ${formatRupiah(parsed.amount)}\n` +
-        `📝 *Keterangan:* ${parsed.description}`,
+        `📝 *Keterangan:* ${parsed.description}` +
+        miniRekap,
       { parse_mode: 'Markdown' }
     );
   } catch (error: any) {
@@ -372,6 +390,23 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
 
     // 2. Beri notifikasi instan ke pengguna bahwa transaksi sudah tercatat!
     const emoji = parsed.type === 'Pemasukan' ? '🟢' : '🔴';
+
+    // Ambil ringkasan bulan ini untuk ditampilkan setelah transaksi dicatat
+    const currentYearMonth = getLocalTodayDateString().slice(0, 7); // YYYY-MM
+    let miniRekap = '';
+    try {
+      const summary = await getMonthSummary(currentYearMonth);
+      const saldoLabel = summary.saldo >= 0 ? '💰 *Sisa:*' : '🔻 *Defisit:*';
+      miniRekap =
+        `\n\n━━━━━━━━━━━━━━━━━━━━━\n` +
+        `📊 *Rekap Bulan Ini:*\n` +
+        `🟢 Masuk: ${formatRupiah(summary.totalPemasukan)}\n` +
+        `🔴 Keluar: ${formatRupiah(summary.totalPengeluaran)}\n` +
+        `${saldoLabel} ${formatRupiah(Math.abs(summary.saldo))}`;
+    } catch {
+      // Jika gagal ambil rekap, tidak mengganggu pesan utama
+    }
+
     await ctx.reply(
       `🧾 *Transaksi Berhasil Dicatat!*\n\n` +
         `📅 *Tanggal:* ${parsed.date}\n` +
@@ -379,7 +414,8 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
         `📂 *Kategori:* ${parsed.category}\n` +
         `💰 *Total Nominal:* ${formatRupiah(parsed.amount)}\n` +
         `📝 *Keterangan:* ${parsed.description}\n\n` +
-        `⏳ _Foto sedang diunggah ke Google Drive di latar belakang..._`,
+        `⏳ _Foto sedang diunggah ke Google Drive di latar belakang..._` +
+        miniRekap,
       { parse_mode: 'Markdown' }
     );
 
