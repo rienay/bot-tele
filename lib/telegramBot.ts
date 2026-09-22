@@ -379,8 +379,24 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
     })();
   } catch (error: any) {
     console.error('Error processing receipt:', error);
-    await ctx.reply(
-      `❌ Gagal memproses foto: ${error?.message || 'Terjadi kesalahan sistem.'}`
-    );
+    const isRateLimit =
+      error?.status === 429 ||
+      error?.message?.includes('429') ||
+      error?.message?.includes('quota') ||
+      error?.message?.includes('Too Many Requests');
+
+    if (isRateLimit) {
+      await ctx.reply(
+        '⏳ *Batas Kecepatan AI (429)*\n\n' +
+          'Google Gemini sedang mencapai batas kuota per menit.\n' +
+          'Sistem sudah disiapkan dengan model cadangan otomatis. Silakan tunggu sekitar *15-30 detik*, lalu kirim ulang foto Anda ya!',
+        { parse_mode: 'Markdown' }
+      );
+    } else {
+      await ctx.reply(
+        `❌ Gagal memproses foto: ${error?.message || 'Terjadi kesalahan sistem.'}`
+      );
+    }
   }
 });
+

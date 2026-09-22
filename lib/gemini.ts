@@ -19,30 +19,48 @@ export function getLocalTodayDateString(date: Date = new Date()): string {
   }).format(date);
 }
 
+const GEMINI_MODELS = ['gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite'];
+
 /**
- * Memanggil Gemini generateContent dengan retry otomatis jika server mengalami spike 503
+ * Memanggil Gemini dengan fallback berantai antar model (gemini-3.6-flash -> gemini-3.5-flash -> gemini-3.5-flash-lite)
+ * untuk mengatasi 429 Too Many Requests atau 503 Service Unavailable pada free tier.
  */
-async function generateWithRetry(model: any, contents: any, maxRetries = 3) {
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+async function generateWithFallback(contents: any): Promise<any> {
+  const genAI = getGeminiClient();
+  let lastError: any = null;
+
+  for (const modelName of GEMINI_MODELS) {
     try {
+      const model = genAI.getGenerativeModel({
+        model: modelName,
+        generationConfig: {
+          responseMimeType: 'application/json',
+          temperature: 0.1,
+        },
+      });
+
       return await model.generateContent(contents);
     } catch (err: any) {
-      const isTemporary =
+      lastError = err;
+      const isRateLimitOrTemporary =
+        err?.status === 429 ||
+        err?.message?.includes('429') ||
+        err?.message?.includes('quota') ||
+        err?.message?.includes('Too Many Requests') ||
         err?.status === 503 ||
         err?.message?.includes('503') ||
         err?.message?.includes('high demand') ||
         err?.message?.includes('temporarily unavailable');
 
-      if (isTemporary && attempt < maxRetries) {
-        console.warn(
-          `[Gemini] Beban tinggi (Percobaan ${attempt}/${maxRetries}), mencoba ulang dalam ${attempt * 1.5}s...`
-        );
-        await new Promise((resolve) => setTimeout(resolve, attempt * 1500));
+      if (isRateLimitOrTemporary) {
+        console.warn(`[Gemini] Model ${modelName} limit/beban tinggi, otomatis mencoba model cadangan...`);
         continue;
       }
       throw err;
     }
   }
+
+  throw lastError;
 }
 
 /**
@@ -52,15 +70,7 @@ export async function parseTextMessage(
   text: string,
   referenceDate: Date = new Date()
 ): Promise<ParsedTransaction | null> {
-  const genAI = getGeminiClient();
-  // Gunakan gemini-2.5-flash jika tersedia, atau gemini-1.5-flash / gemini-2.0-flash
-  const model = genAI.getGenerativeModel({
-    model: 'gemini-3.6-flash',
-    generationConfig: {
-      responseMimeType: 'application/json',
-      temperature: 0.1,
-    },
-  });
+
 
   const todayStr = getLocalTodayDateString(referenceDate);
 
@@ -106,7 +116,7 @@ Kembalikan respon JSON persis dengan struktur berikut:
 Jika pesan tersebut bukan catatan keuangan (misal cuma menyapa "halo"), kembalikan JSON: null.`;
 
   try {
-    const result = await generateWithRetry(model, prompt);
+    const result = await generateWithFallback(prompt);
     const responseText = result.response.text().trim();
     if (!responseText || responseText === 'null') {
       return null;
@@ -131,15 +141,6 @@ export async function parseReceiptImage(
   caption?: string,
   referenceDate: Date = new Date()
 ): Promise<ParsedTransaction | null> {
-  const genAI = getGeminiClient();
-  const model = genAI.getGenerativeModel({
-    model: 'gemini-3.6-flash',
-    generationConfig: {
-      responseMimeType: 'application/json',
-      temperature: 0.1,
-    },
-  });
-
   const todayStr = getLocalTodayDateString(referenceDate);
 
   const prompt = `Analisis foto ini. Foto ini bisa berupa berbagai macam bukti transaksi keuangan:
@@ -189,7 +190,7 @@ Kembalikan respon JSON persis dengan struktur berikut:
 Jika gambar sama sekali bukan bukti transfer, bukan struk/nota, dan tidak ada nominal transaksi finansial, kembalikan JSON: null.`;
 
   try {
-    const result = await generateWithRetry(model, [
+    const result = await generateWithFallback([
       prompt,
       {
         inlineData: {
