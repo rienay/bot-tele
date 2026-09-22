@@ -16,4 +16,8 @@ export interface SummaryReport {
   saldo: number;
   count: number;
   bulan: string;
+  totalAllTimePemasukan: number;
+  totalAllTimePengeluaran: number;
+  saldoAllTime: number;
+  totalAllTimeCount: number;
 }

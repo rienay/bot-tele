@@ -64,15 +64,58 @@ bot.command(['start', 'help'], async (ctx) => {
 bot.command('rekap', async (ctx) => {
   try {
     await ctx.replyWithChatAction('typing');
-    const summary = await getMonthSummary();
-    await ctx.reply(
-      `📊 *Ringkasan Keuangan (${summary.bulan})*\n\n` +
-        `🟢 *Total Pemasukan:* ${formatRupiah(summary.totalPemasukan)}\n` +
-        `🔴 *Total Pengeluaran:* ${formatRupiah(summary.totalPengeluaran)}\n` +
-        `💰 *Sisa Saldo:* ${formatRupiah(summary.saldo)}\n\n` +
-        `📝 *Total Transaksi Tercatat:* ${summary.count} transaksi.`,
-      { parse_mode: 'Markdown' }
-    );
+
+    // Cek apakah ada argumen bulan, misal: /rekap agustus atau /rekap 08 atau /rekap 2026-08
+    const text = ctx.message?.text || '';
+    const parts = text.split(' ').slice(1).join(' ').trim().toLowerCase();
+
+    let targetPrefix: string | undefined;
+
+    const monthMap: Record<string, string> = {
+      januari: '01', jan: '01',
+      februari: '02', feb: '02',
+      maret: '03', mar: '03',
+      april: '04', apr: '04',
+      mei: '05',
+      juni: '06', jun: '06',
+      juli: '07', jul: '07',
+      agustus: '08', agu: '08', agt: '08',
+      september: '09', sep: '09',
+      oktober: '10', okt: '10',
+      november: '11', nov: '11',
+      desember: '12', des: '12',
+    };
+
+    const currentYear = new Date().getFullYear();
+
+    if (parts) {
+      if (monthMap[parts]) {
+        targetPrefix = `${currentYear}-${monthMap[parts]}`;
+      } else if (/^\d{1,2}$/.test(parts)) {
+        targetPrefix = `${currentYear}-${parts.padStart(2, '0')}`;
+      } else if (/^\d{4}-\d{1,2}$/.test(parts)) {
+        const [y, m] = parts.split('-');
+        targetPrefix = `${y}-${m.padStart(2, '0')}`;
+      }
+    }
+
+    const summary = await getMonthSummary(targetPrefix);
+
+    let msg = `📊 *Rekap Keuangan (${summary.bulan})*\n\n`;
+    msg += `🟢 *Pemasukan:* ${formatRupiah(summary.totalPemasukan)}\n`;
+    msg += `🔴 *Pengeluaran:* ${formatRupiah(summary.totalPengeluaran)}\n`;
+    msg += `💰 *Sisa Saldo Periode Ini:* ${formatRupiah(summary.saldo)}\n`;
+    msg += `📝 *Jumlah Transaksi:* ${summary.count} transaksi\n\n`;
+
+    msg += `━━━━━━━━━━━━━━━━━━━\n`;
+    msg += `🌐 *Akumulasi Kas (Semua Periode):*\n`;
+    msg += `🟢 *Total Uang Masuk:* ${formatRupiah(summary.totalAllTimePemasukan)}\n`;
+    msg += `🔴 *Total Uang Keluar:* ${formatRupiah(summary.totalAllTimePengeluaran)}\n`;
+    msg += `💵 *Sisa Saldo Kas Riil:* ${formatRupiah(summary.saldoAllTime)}\n`;
+    msg += `📑 *Total Seluruh Transaksi:* ${summary.totalAllTimeCount} transaksi\n\n`;
+    msg += `💡 _Tips: Anda bisa cek bulan lain dengan cara:_ \`/rekap agustus\` _atau_ \`/rekap 08\``;
+
+    await ctx.reply(msg, { parse_mode: 'Markdown' });
   } catch (error: any) {
     console.error('Error saat membuat rekap:', error);
     await ctx.reply(`⚠️ Gagal mengambil rekap: ${error?.message || 'Terjadi kesalahan sistem.'}`);
