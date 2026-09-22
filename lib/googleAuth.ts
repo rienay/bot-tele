@@ -8,7 +8,22 @@ export function formatPrivateKey(rawKey: string): string {
   if (!rawKey) return '';
   let cleaned = rawKey.trim();
 
-  // Bersihkan tanda kutip luar jika ada
+  // 1. Jika pengguna mem-paste seluruh isi JSON service account
+  if (cleaned.includes('"private_key"')) {
+    try {
+      const parsedJson = JSON.parse(cleaned);
+      if (parsedJson.private_key) {
+        cleaned = parsedJson.private_key;
+      }
+    } catch {
+      const jsonMatch = cleaned.match(/"private_key"\s*:\s*"([^"]+)"/);
+      if (jsonMatch) {
+        cleaned = jsonMatch[1];
+      }
+    }
+  }
+
+  // 2. Bersihkan tanda kutip luar jika ada
   if (
     (cleaned.startsWith('"') && cleaned.endsWith('"')) ||
     (cleaned.startsWith("'") && cleaned.endsWith("'"))
@@ -16,15 +31,21 @@ export function formatPrivateKey(rawKey: string): string {
     cleaned = cleaned.slice(1, -1).trim();
   }
 
-  // Ganti literal \n menjadi newline dan bersihkan return carriage
-  cleaned = cleaned.replace(/\\n/g, '\n').replace(/\r/g, '');
+  // 3. Normalisasi newline (\r\n -> \n, dan literal \n -> newline asli)
+  cleaned = cleaned.replace(/\\n/g, '\n').replace(/\r/g, '').trim();
 
-  // Ekstrak base64 di antara BEGIN dan END
-  const match = cleaned.match(/-----BEGIN [A-Z\s]+-----([^-]+)-----END [A-Z\s]+-----/);
+  // 4. Jika kunci sudah memiliki header BEGIN dan END
+  const match = cleaned.match(/-----BEGIN [^-]+-----([\s\S]+?)-----END [^-]+-----/);
   if (match) {
-    // Bersihkan semua spasi & newline di dalam base64, lalu bagi menjadi baris 64 karakter
-    const base64Only = match[1].replace(/\s+/g, '');
+    const base64Only = match[1].replace(/[^A-Za-z0-9+/=]/g, '');
     const chunked = base64Only.match(/.{1,64}/g)?.join('\n') || base64Only;
+    return `-----BEGIN PRIVATE KEY-----\n${chunked}\n-----END PRIVATE KEY-----\n`;
+  }
+
+  // 5. Jika hanya berupa base64 murni tanpa header PEM
+  const base64Pure = cleaned.replace(/[^A-Za-z0-9+/=]/g, '');
+  if (base64Pure.length > 500) {
+    const chunked = base64Pure.match(/.{1,64}/g)?.join('\n') || base64Pure;
     return `-----BEGIN PRIVATE KEY-----\n${chunked}\n-----END PRIVATE KEY-----\n`;
   }
 

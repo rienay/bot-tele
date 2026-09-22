@@ -1,8 +1,10 @@
 import { Bot } from 'grammy';
 import dns from 'dns';
+import { google } from 'googleapis';
 import { parseTextMessage, parseReceiptImage } from './gemini';
 import { appendTransaction, getMonthSummary, updateTransactionNoteLink } from './googleSheets';
 import { uploadReceiptToDrive } from './googleDrive';
+import { formatPrivateKey, getGoogleAuth } from './googleAuth';
 
 // Paksa IPv4 untuk menghindari timeout koneksi IPv6 ke server Telegram di jaringan Windows/ISP lokal
 try {
@@ -58,6 +60,39 @@ bot.command(['start', 'help'], async (ctx) => {
       `🆔 _ID Telegram Anda: \`${senderId}\`_`,
     { parse_mode: 'Markdown' }
   );
+});
+
+// Command: /debug (Diagnostik sistem & koneksi Google Sheets di Vercel)
+bot.command('debug', async (ctx) => {
+  const rawKey = process.env.GOOGLE_PRIVATE_KEY || '';
+  const email = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || '';
+  const sheetId = process.env.GOOGLE_SHEET_ID || '';
+  const formatted = formatPrivateKey(rawKey);
+
+  let jwtStatus = 'Testing...';
+  try {
+    const auth = getGoogleAuth();
+    const sheets = google.sheets({ version: 'v4', auth });
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: sheetId,
+      range: 'Transaksi!A1:B1',
+    });
+    jwtStatus = `✅ Sukses! Kolom: ${res.data.values?.[0]?.join(', ')}`;
+  } catch (err: any) {
+    jwtStatus = `❌ Gagal: ${err.message}`;
+  }
+
+  const msg =
+    `🛠️ *Laporan Diagnostik Bot*\n\n` +
+    `📧 *Service Account:* \`${email || 'KOSONG'}\`\n` +
+    `📊 *Sheet ID:* \`${sheetId || 'KOSONG'}\`\n` +
+    `🔑 *Raw Key Length:* ${rawKey.length} karakter\n` +
+    `✨ *Formatted Key Length:* ${formatted.length} karakter\n` +
+    `📌 *Kunci Awal:* \`${rawKey.slice(0, 30)}\`\n` +
+    `📌 *Kunci Akhir:* \`${rawKey.slice(-30)}\`\n\n` +
+    `📋 *Status Google Sheets:* ${jwtStatus}`;
+
+  await ctx.reply(msg, { parse_mode: 'Markdown' });
 });
 
 // Command: /rekap & /recap
