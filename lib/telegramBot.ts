@@ -1,10 +1,11 @@
-import { Bot } from 'grammy';
+import { Bot, InputFile } from 'grammy';
 import dns from 'dns';
 import { google } from 'googleapis';
 import { parseTextMessage, parseReceiptImage, getLocalTodayDateString } from './gemini';
 import { appendTransaction, getMonthSummary, updateTransactionNoteLink } from './googleSheets';
 import { uploadReceiptToDrive } from './googleDrive';
 import { formatPrivateKey, getGoogleAuth } from './googleAuth';
+import { generateNotaPdf, generateNotaPng, HARGA_PER_KG, rupiahFormat } from './generateNota';
 
 // Paksa IPv4 untuk menghindari timeout koneksi IPv6 ke server Telegram di jaringan Windows/ISP lokal
 try {
@@ -23,6 +24,24 @@ export const bot = new Bot(token || 'dummy_token');
 // Set untuk deduplikasi: mencegah 1 update diproses >1x akibat Telegram retry webhook
 const processedUpdateIds = new Set<number>();
 const MAX_DEDUP_CACHE = 500; // batas agar memori tidak bocor
+
+// ============================================================
+// STATE MACHINE: Percakapan multi-step untuk /nota
+// ============================================================
+type NotaStep = 'invoice_no' | 'tanggal' | 'nama' | 'alamat' | 'catatan' | 'items';
+interface NotaState {
+  step: NotaStep;
+  data: {
+    noInvoice?: string;
+    tanggal?: string;
+    namaKepada?: string;
+    alamatKepada?: string;
+    catatan?: string;
+    items: number[];
+  };
+}
+// Map: chatId → state nota yang sedang berlangsung
+const notaStates = new Map<number, NotaState>();
 
 function formatRupiah(amount: number): string {
   return new Intl.NumberFormat('id-ID', {
@@ -254,18 +273,198 @@ bot.command(['rekap', 'recap'], async (ctx) => {
   await sendRekap(ctx, parts);
 });
 
+// ============================================================
+// Command: /nota — mulai percakapan buat nota
+// ============================================================
+bot.command('nota', async (ctx) => {
+  const chatId = ctx.chat.id;
+  notaStates.set(chatId, { step: 'invoice_no', data: { items: [] } });
+  await ctx.reply(
+    `📋 *Buat Nota AJP*\n\n` +
+    `Masukkan *No. Invoice:*\n` +
+    `_(contoh: 011/AJP/JJ/2026)_`,
+    { parse_mode: 'Markdown' }
+  );
+});
+
+// ============================================================
+// Proses setiap langkah percakapan /nota
+// ============================================================
+async function processNotaStep(ctx: any, chatId: number, text: string): Promise<boolean> {
+  const state = notaStates.get(chatId);
+  if (!state) return false; // Bukan dalam mode nota
+
+  switch (state.step) {
+    case 'invoice_no':
+      state.data.noInvoice = text;
+      state.step = 'tanggal';
+      await ctx.reply(
+        `✅ No. Invoice: *${text}*\n\n` +
+        `📅 Masukkan *Tanggal:*\n_(contoh: 22 September 2026)_`,
+        { parse_mode: 'Markdown' }
+      );
+      break;
+
+    case 'tanggal':
+      state.data.tanggal = text;
+      state.step = 'nama';
+      await ctx.reply(
+        `✅ Tanggal: *${text}*\n\n` +
+        `👤 Masukkan *Nama penerima (Kepada Yth.):*`,
+        { parse_mode: 'Markdown' }
+      );
+      break;
+
+    case 'nama':
+      state.data.namaKepada = text;
+      state.step = 'alamat';
+      await ctx.reply(
+        `✅ Nama: *${text}*\n\n` +
+        `📍 Masukkan *Alamat penerima:*`,
+        { parse_mode: 'Markdown' }
+      );
+      break;
+
+    case 'alamat':
+      state.data.alamatKepada = text;
+      state.step = 'catatan';
+      await ctx.reply(
+        `✅ Alamat: *${text}*\n\n` +
+        `📝 Masukkan *Catatan nota:*\n_(keterangan kegiatan)_`,
+        { parse_mode: 'Markdown' }
+      );
+      break;
+
+    case 'catatan':
+      state.data.catatan = text;
+      state.step = 'items';
+      await ctx.reply(
+        `✅ Catatan dicatat.\n\n` +
+        `⚖️ *Item 1 — Berat Bersih (kg):*\n_(ketik angka saja, contoh: \`54\`)_`,
+        { parse_mode: 'Markdown' }
+      );
+      break;
+
+    case 'items': {
+      // Cek apakah user sudah ketik 'selesai'
+      if (text.toLowerCase() === 'selesai' || text.toLowerCase() === 'done') {
+        if (state.data.items.length === 0) {
+          await ctx.reply('⚠️ Belum ada item yang ditambahkan. Masukkan berat (kg) minimal 1 item.');
+          break;
+        }
+        // Generate nota PDF
+        notaStates.delete(chatId);
+        await ctx.reply('⏳ _Sedang membuat nota PDF..._', { parse_mode: 'Markdown' });
+        try {
+          const pdfBuffer = await generateNotaPdf({
+            noInvoice: state.data.noInvoice!,
+            tanggal: state.data.tanggal!,
+            namaKepada: state.data.namaKepada!,
+            alamatKepada: state.data.alamatKepada!,
+            catatan: state.data.catatan!,
+            items: state.data.items,
+          });
+          const total = state.data.items.reduce((s, kg) => s + Math.round(kg * HARGA_PER_KG), 0);
+          const filename = `Nota-${state.data.noInvoice!.replace(/\//g, '-')}.pdf`;
+          await ctx.replyWithDocument(
+            new InputFile(pdfBuffer, filename),
+            {
+              caption:
+                `📄 *Nota Berhasil Dibuat!*\n` +
+                `🔢 No. Invoice: *${state.data.noInvoice}*\n` +
+                `📅 Tanggal: *${state.data.tanggal}*\n` +
+                `👤 Kepada: *${state.data.namaKepada}*\n` +
+                `💰 Total: *${rupiahFormat(total)}*`,
+              parse_mode: 'Markdown',
+            }
+          );
+        } catch (err: any) {
+          console.error('Error generate nota PDF:', err);
+          await ctx.reply(`❌ Gagal membuat nota: ${err.message}`);
+        }
+        break;
+      }
+
+      // Parse berat (kg)
+      const kg = parseFloat(text.replace(',', '.'));
+      if (isNaN(kg) || kg <= 0) {
+        await ctx.reply(
+          '⚠️ Format tidak dikenali. Masukkan angka berat dalam kg.\n' +
+          `_(contoh: \`54\` atau \`12.5\`)_\n\n` +
+          `Atau ketik *selesai* jika sudah selesai menambah item.`,
+          { parse_mode: 'Markdown' }
+        );
+        break;
+      }
+
+      state.data.items.push(kg);
+      const itemIdx = state.data.items.length;
+      const jumlah = Math.round(kg * HARGA_PER_KG);
+      const nextItemNum = itemIdx + 1;
+
+      if (itemIdx >= 10) {
+        // Sudah 10 item (max), langsung generate
+        notaStates.delete(chatId);
+        await ctx.reply('✅ Item penuh (maks 10). Membuat nota...');
+        // Trigger generate — reuse code dari 'selesai'
+        // Kirim sebagai rekursif tidak ideal, jadi panggil langsung
+        const pdfBuffer = await generateNotaPdf({
+          noInvoice: state.data.noInvoice!,
+          tanggal: state.data.tanggal!,
+          namaKepada: state.data.namaKepada!,
+          alamatKepada: state.data.alamatKepada!,
+          catatan: state.data.catatan!,
+          items: state.data.items,
+        });
+        const total = state.data.items.reduce((s, k) => s + Math.round(k * HARGA_PER_KG), 0);
+        const filename = `Nota-${state.data.noInvoice!.replace(/\//g, '-')}.pdf`;
+        await ctx.replyWithDocument(
+          new InputFile(pdfBuffer, filename),
+          { caption: `📄 Nota selesai! Total: *${rupiahFormat(total)}*`, parse_mode: 'Markdown' }
+        );
+      } else {
+        await ctx.reply(
+          `✅ Item ${itemIdx}: *${kg} kg* × Rp 7.200 = *${rupiahFormat(jumlah)}*\n\n` +
+          `⚖️ *Item ${nextItemNum}* _(atau ketik *selesai* jika sudah):_`,
+          { parse_mode: 'Markdown' }
+        );
+      }
+      break;
+    }
+  }
+  return true; // Sudah ditangani oleh nota state machine
+}
+
 // Handler: Pesan Teks
 bot.on('message:text', async (ctx) => {
   const text = ctx.message.text.trim();
+  const chatId = ctx.chat.id;
+
+  // === Cek apakah pengguna sedang dalam mode /nota ===
+  if (notaStates.has(chatId)) {
+    await processNotaStep(ctx, chatId, text);
+    return;
+  }
 
   // Skip: jika ini adalah perintah slash (sudah ditangani oleh bot.command di atas)
   if (text.startsWith('/')) {
     // Hanya balas jika bukan perintah yang dikenal (bukan /rekap, /start, /help, /debug)
-    const knownCommands = ['/rekap', '/recap', '/start', '/help', '/debug'];
+    const knownCommands = ['/rekap', '/recap', '/start', '/help', '/debug', '/nota'];
     const isKnown = knownCommands.some((cmd) => text.toLowerCase().startsWith(cmd));
     if (!isKnown) {
       await ctx.reply('❓ Perintah tidak dikenali. Ketik /help untuk melihat panduan atau /rekap untuk melihat ringkasan keuangan.');
     }
+    return;
+  }
+
+  // Trigger nota via teks bebas
+  if (text.toLowerCase().startsWith('buat nota') || text.toLowerCase() === 'nota') {
+    const cmdCtx = { ...ctx, message: { ...ctx.message, text: '/nota' } };
+    notaStates.set(chatId, { step: 'invoice_no', data: { items: [] } });
+    await ctx.reply(
+      `📋 *Buat Nota AJP*\n\nMasukkan *No. Invoice:*\n_(contoh: 011/AJP/JJ/2026)_`,
+      { parse_mode: 'Markdown' }
+    );
     return;
   }
 
