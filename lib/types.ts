@@ -11,13 +11,13 @@ export interface ParsedTransaction {
 }
 
 export interface SummaryReport {
+  isAllTime: boolean;
+  periodeLabel: string;
   totalPengeluaran: number;
   totalPemasukan: number;
   saldo: number;
   count: number;
-  bulan: string;
-  totalAllTimePemasukan: number;
-  totalAllTimePengeluaran: number;
-  saldoAllTime: number;
-  totalAllTimeCount: number;
+  categoryExpenses: Record<string, number>;
+  categoryIncome: Record<string, number>;
 }
+

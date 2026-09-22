@@ -184,21 +184,14 @@ export async function updateTransactionNoteLink(
 }
 
 /**
- * Mengambil rekap transaksi bulan berjalan atau bulan tertentu beserta total all-time
+ * Mengambil rekap transaksi.
+ * Jika yearMonthPrefix diberikan (misal '2026-08'), akan menghitung KHUSUS bulan tersebut.
+ * Jika tidak diberikan (undefined), akan menghitung SEMUA transaksi (All-Time / Keseluruhan).
  */
-export async function getMonthSummary(yearMonthPrefix?: string): Promise<SummaryReport> {
+export async function getMonthSummary(yearMonthPrefix?: string, customLabel?: string): Promise<SummaryReport> {
   const auth = getGoogleAuth();
   const sheets = google.sheets({ version: 'v4', auth });
   const { spreadsheetId, sheetName } = getSheetConfig();
-
-  // Prefix default: YYYY-MM hari ini
-  const targetPrefix =
-    yearMonthPrefix ||
-    new Intl.DateTimeFormat('en-CA', {
-      timeZone: 'Asia/Jakarta',
-      year: 'numeric',
-      month: '2-digit',
-    }).format(new Date());
 
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId,
@@ -209,13 +202,13 @@ export async function getMonthSummary(yearMonthPrefix?: string): Promise<Summary
   let totalPengeluaran = 0;
   let totalPemasukan = 0;
   let count = 0;
+  const categoryExpenses: Record<string, number> = {};
+  const categoryIncome: Record<string, number> = {};
 
-  let totalAllTimePengeluaran = 0;
-  let totalAllTimePemasukan = 0;
-  let totalAllTimeCount = 0;
+  const isAllTime = !yearMonthPrefix;
 
   for (const row of rows) {
-    const [tglRaw, jenis, _kat, nominalRaw] = row;
+    const [tglRaw, jenis, katRaw, nominalRaw] = row;
     if (!tglRaw || !nominalRaw) continue;
 
     const cleanNominal =
@@ -225,38 +218,38 @@ export async function getMonthSummary(yearMonthPrefix?: string): Promise<Summary
 
     const isPengeluaran = jenis?.toLowerCase().includes('pengeluaran');
     const isPemasukan = jenis?.toLowerCase().includes('pemasukan');
+    const kategori = katRaw?.trim() || 'Lain-lain';
 
-    // Akumulasi Semua Periode (All-Time)
-    if (isPengeluaran) {
-      totalAllTimePengeluaran += cleanNominal;
-      totalAllTimeCount++;
-    } else if (isPemasukan) {
-      totalAllTimePemasukan += cleanNominal;
-      totalAllTimeCount++;
+    if (!isAllTime) {
+      const ym = normalizeDateToYearMonth(tglRaw);
+      if (ym !== yearMonthPrefix) {
+        continue;
+      }
     }
 
-    // Filter berdasarkan Bulan Tertentu
-    const ym = normalizeDateToYearMonth(tglRaw);
-    if (ym === targetPrefix) {
-      if (isPengeluaran) {
-        totalPengeluaran += cleanNominal;
-        count++;
-      } else if (isPemasukan) {
-        totalPemasukan += cleanNominal;
-        count++;
-      }
+    if (isPengeluaran) {
+      totalPengeluaran += cleanNominal;
+      categoryExpenses[kategori] = (categoryExpenses[kategori] || 0) + cleanNominal;
+      count++;
+    } else if (isPemasukan) {
+      totalPemasukan += cleanNominal;
+      categoryIncome[kategori] = (categoryIncome[kategori] || 0) + cleanNominal;
+      count++;
     }
   }
 
+  const periodeLabel = isAllTime
+    ? 'Semua Transaksi (Keseluruhan)'
+    : customLabel || yearMonthPrefix || '';
+
   return {
+    isAllTime,
+    periodeLabel,
     totalPengeluaran,
     totalPemasukan,
     saldo: totalPemasukan - totalPengeluaran,
     count,
-    bulan: targetPrefix,
-    totalAllTimePengeluaran,
-    totalAllTimePemasukan,
-    saldoAllTime: totalAllTimePemasukan - totalAllTimePengeluaran,
-    totalAllTimeCount,
+    categoryExpenses,
+    categoryIncome,
   };
 }
