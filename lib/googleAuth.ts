@@ -10,8 +10,17 @@ export function getGoogleAuth() {
     );
   }
 
-  // Handle escape character \n jika dipassing dari environment variable string
-  privateKey = privateKey.replace(/\\n/g, '\n');
+  // 1. Bersihkan spasi serta tanda kutip pembuka & penutup jika terikut saat copy-paste di Vercel
+  privateKey = privateKey.trim();
+  if (
+    (privateKey.startsWith('"') && privateKey.endsWith('"')) ||
+    (privateKey.startsWith("'") && privateKey.endsWith("'"))
+  ) {
+    privateKey = privateKey.slice(1, -1);
+  }
+
+  // 2. Normalisasi newline (\r\n -> \n, dan literal \n -> newline asli)
+  privateKey = privateKey.replace(/\r\n/g, '\n').replace(/\r/g, '').replace(/\\n/g, '\n').trim();
 
   return new google.auth.JWT({
     email: clientEmail,
