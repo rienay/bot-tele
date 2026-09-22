@@ -20,6 +20,10 @@ if (!token) {
 
 export const bot = new Bot(token || 'dummy_token');
 
+// Set untuk deduplikasi: mencegah 1 update diproses >1x akibat Telegram retry webhook
+const processedUpdateIds = new Set<number>();
+const MAX_DEDUP_CACHE = 500; // batas agar memori tidak bocor
+
 function formatRupiah(amount: number): string {
   return new Intl.NumberFormat('id-ID', {
     style: 'currency',
@@ -30,6 +34,21 @@ function formatRupiah(amount: number): string {
 
 // Middleware Keamanan: Whitelist Telegram User ID
 bot.use(async (ctx, next) => {
+  // --- Deduplikasi: skip update yang sudah pernah diproses (akibat Telegram webhook retry) ---
+  const updateId = ctx.update.update_id;
+  if (processedUpdateIds.has(updateId)) {
+    console.warn(`[Dedup] Update ${updateId} sudah diproses, diabaikan.`);
+    return;
+  }
+  // Tandai sebagai sudah diproses
+  processedUpdateIds.add(updateId);
+  // Bersihkan cache lama agar tidak bocor memori
+  if (processedUpdateIds.size > MAX_DEDUP_CACHE) {
+    const firstItem = processedUpdateIds.values().next().value;
+    if (firstItem !== undefined) processedUpdateIds.delete(firstItem);
+  }
+
+  // --- Whitelist Telegram User ID ---
   const allowed = process.env.ALLOWED_TELEGRAM_USER_IDS;
   if (allowed && allowed.trim() !== '') {
     const list = allowed.split(',').map((id) => id.trim());
@@ -239,15 +258,21 @@ bot.command(['rekap', 'recap'], async (ctx) => {
 bot.on('message:text', async (ctx) => {
   const text = ctx.message.text.trim();
 
+  // Skip: jika ini adalah perintah slash (sudah ditangani oleh bot.command di atas)
+  if (text.startsWith('/')) {
+    // Hanya balas jika bukan perintah yang dikenal (bukan /rekap, /start, /help, /debug)
+    const knownCommands = ['/rekap', '/recap', '/start', '/help', '/debug'];
+    const isKnown = knownCommands.some((cmd) => text.toLowerCase().startsWith(cmd));
+    if (!isKnown) {
+      await ctx.reply('❓ Perintah tidak dikenali. Ketik /help untuk melihat panduan atau /rekap untuk melihat ringkasan keuangan.');
+    }
+    return;
+  }
+
   // Jika pengguna mengetik 'rekap' atau 'recap' tanpa tanda slash
   if (text.toLowerCase().startsWith('rekap') || text.toLowerCase().startsWith('recap')) {
     const parts = text.split(' ').slice(1).join(' ').trim();
     await sendRekap(ctx, parts);
-    return;
-  }
-
-  if (text.startsWith('/')) {
-    await ctx.reply('❓ Perintah tidak dikenali. Ketik /help untuk melihat panduan atau /rekap untuk melihat ringkasan keuangan.');
     return;
   }
 
