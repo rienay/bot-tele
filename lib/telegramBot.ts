@@ -1,7 +1,7 @@
 import { Bot } from 'grammy';
 import dns from 'dns';
 import { parseTextMessage, parseReceiptImage } from './gemini';
-import { appendTransaction, getMonthSummary } from './googleSheets';
+import { appendTransaction, getMonthSummary, updateTransactionNoteLink } from './googleSheets';
 import { uploadReceiptToDrive } from './googleDrive';
 
 // Paksa IPv4 untuk menghindari timeout koneksi IPv6 ke server Telegram di jaringan Windows/ISP lokal
@@ -165,47 +165,55 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
     const arrayBuffer = await response.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
-    // Proses OCR dengan Gemini dan Upload ke Drive secara paralel
-    const [driveLink, parsed] = await Promise.all([
-      uploadReceiptToDrive(buffer, fileName, mimeType).catch((err) => {
-        console.error('Gagal upload ke Drive:', err);
-        return null;
-      }),
-      parseReceiptImage(buffer, mimeType, ctx.message.caption),
-    ]);
+    // Proses OCR dengan Gemini terlebih dahulu agar transaksi langsung tercatat tanpa menunggu upload Drive
+    const parsed = await parseReceiptImage(buffer, mimeType, ctx.message.caption);
 
     if (!parsed) {
       await ctx.reply(
-        '⚠️ Gambar tidak terdeteksi sebagai nota/struk belanja yang valid atau nominal total tidak terbaca jelas. Mohon pastikan foto cukup terang dan mencakup bagian Total.'
+        '⚠️ Gambar tidak terdeteksi sebagai nota/struk belanja atau bukti transfer yang valid. Mohon pastikan foto cukup jelas dan mencakup nominal transaksi.'
       );
       return;
     }
 
-    if (driveLink) {
-      parsed.noteLink = driveLink;
-    }
+    // 1. Simpan segera ke Google Sheets
+    const rowNumber = await appendTransaction(parsed);
 
-    // Simpan ke Google Sheets
-    await appendTransaction(parsed);
-
+    // 2. Beri notifikasi instan ke pengguna bahwa transaksi sudah tercatat!
     const emoji = parsed.type === 'Pemasukan' ? '🟢' : '🔴';
-    let replyMsg =
-      `🧾 *Nota Berhasil Dicatat!*\n\n` +
-      `📅 *Tanggal:* ${parsed.date}\n` +
-      `${emoji} *Jenis:* ${parsed.type}\n` +
-      `📂 *Kategori:* ${parsed.category}\n` +
-      `💰 *Total Nominal:* ${formatRupiah(parsed.amount)}\n` +
-      `📝 *Keterangan:* ${parsed.description}\n`;
+    await ctx.reply(
+      `🧾 *Transaksi Berhasil Dicatat!*\n\n` +
+        `📅 *Tanggal:* ${parsed.date}\n` +
+        `${emoji} *Jenis:* ${parsed.type}\n` +
+        `📂 *Kategori:* ${parsed.category}\n` +
+        `💰 *Total Nominal:* ${formatRupiah(parsed.amount)}\n` +
+        `📝 *Keterangan:* ${parsed.description}\n\n` +
+        `⏳ _Foto sedang diunggah ke Google Drive di latar belakang..._`,
+      { parse_mode: 'Markdown' }
+    );
 
-    if (driveLink) {
-      replyMsg += `📎 *Bukti Nota:* [Buka di Google Drive](${driveLink})\n`;
-    }
-
-    await ctx.reply(replyMsg, { parse_mode: 'Markdown', link_preview_options: { is_disabled: true } });
+    // 3. Upload ke Google Drive secara asinkron (background) agar tidak menghambat antrean foto berikutnya
+    (async () => {
+      try {
+        const driveLink = await uploadReceiptToDrive(buffer, fileName, mimeType);
+        if (driveLink) {
+          if (rowNumber) {
+            await updateTransactionNoteLink(rowNumber, driveLink).catch(console.error);
+          }
+          await ctx.reply(
+            `📎 *Foto Tersimpan di Google Drive!*\n` +
+              `📝 *Item:* ${parsed.description} (${formatRupiah(parsed.amount)})\n` +
+              `🔗 [Buka Foto di Google Drive](${driveLink})`,
+            { parse_mode: 'Markdown', link_preview_options: { is_disabled: true } }
+          ).catch(console.error);
+        }
+      } catch (uploadErr) {
+        console.error('Error saat upload background ke Drive:', uploadErr);
+      }
+    })();
   } catch (error: any) {
     console.error('Error processing receipt:', error);
     await ctx.reply(
-      `❌ Gagal memproses nota: ${error?.message || 'Terjadi kesalahan sistem.'}`
+      `❌ Gagal memproses foto: ${error?.message || 'Terjadi kesalahan sistem.'}`
     );
   }
 });

@@ -85,7 +85,7 @@ export async function ensureHeaderRow(): Promise<void> {
 /**
  * Menambahkan data transaksi ke baris baru Google Sheets
  */
-export async function appendTransaction(tx: ParsedTransaction): Promise<void> {
+export async function appendTransaction(tx: ParsedTransaction): Promise<number | null> {
   await ensureHeaderRow();
 
   const auth = getGoogleAuth();
@@ -108,13 +108,43 @@ export async function appendTransaction(tx: ParsedTransaction): Promise<void> {
     nowJakarta,
   ];
 
-  await sheets.spreadsheets.values.append({
+  const res = await sheets.spreadsheets.values.append({
     spreadsheetId,
     range: `${sheetName}!A:G`,
     valueInputOption: 'USER_ENTERED',
     insertDataOption: 'INSERT_ROWS',
     requestBody: {
       values: [rowValues],
+    },
+  });
+
+  const updatedRange = res.data.updates?.updatedRange;
+  if (updatedRange) {
+    const match = updatedRange.match(/!A(\d+)/);
+    if (match) {
+      return parseInt(match[1], 10);
+    }
+  }
+  return null;
+}
+
+/**
+ * Memperbarui link foto nota di kolom F pada baris tertentu
+ */
+export async function updateTransactionNoteLink(
+  rowNumber: number,
+  noteLink: string
+): Promise<void> {
+  const auth = getGoogleAuth();
+  const sheets = google.sheets({ version: 'v4', auth });
+  const { spreadsheetId, sheetName } = getSheetConfig();
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: `${sheetName}!F${rowNumber}`,
+    valueInputOption: 'USER_ENTERED',
+    requestBody: {
+      values: [[noteLink]],
     },
   });
 }
