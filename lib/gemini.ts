@@ -20,6 +20,32 @@ export function getLocalTodayDateString(date: Date = new Date()): string {
 }
 
 /**
+ * Memanggil Gemini generateContent dengan retry otomatis jika server mengalami spike 503
+ */
+async function generateWithRetry(model: any, contents: any, maxRetries = 3) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await model.generateContent(contents);
+    } catch (err: any) {
+      const isTemporary =
+        err?.status === 503 ||
+        err?.message?.includes('503') ||
+        err?.message?.includes('high demand') ||
+        err?.message?.includes('temporarily unavailable');
+
+      if (isTemporary && attempt < maxRetries) {
+        console.warn(
+          `[Gemini] Beban tinggi (Percobaan ${attempt}/${maxRetries}), mencoba ulang dalam ${attempt * 1.5}s...`
+        );
+        await new Promise((resolve) => setTimeout(resolve, attempt * 1500));
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
+/**
  * Ekstraksi transaksi dari pesan teks bahasa natural
  */
 export async function parseTextMessage(
@@ -80,7 +106,7 @@ Kembalikan respon JSON persis dengan struktur berikut:
 Jika pesan tersebut bukan catatan keuangan (misal cuma menyapa "halo"), kembalikan JSON: null.`;
 
   try {
-    const result = await model.generateContent(prompt);
+    const result = await generateWithRetry(model, prompt);
     const responseText = result.response.text().trim();
     if (!responseText || responseText === 'null') {
       return null;
@@ -116,41 +142,52 @@ export async function parseReceiptImage(
 
   const todayStr = getLocalTodayDateString(referenceDate);
 
-  const prompt = `Analisis foto struk / nota belanja ini.
-Tanggal referensi hari ini: ${todayStr}.
-Caption dari pengguna (jika ada): "${caption || '-'}"
+  const prompt = `Analisis foto ini. Foto ini bisa berupa:
+1. BUKTI TRANSFER BANK / E-WALLET / QRIS (BCA Mobile, Mandiri Livin, BRImo, BNI, Seabank, Bank Jago, GoPay, OVO, DANA, ShopeePay, Flip, dll).
+2. STRUK / NOTA BELANJA (struk kasir minimarket, resto, toko, SPBU, invoice, dll).
 
-Tugas:
-1. Temukan TOTAL BAYAR / GRAND TOTAL transaksi ini (Pastikan bukan Subtotal, Pajak, Tunai/Cash, atau Kembalian). Masukkan dalam 'amount' sebagai angka murni (number).
-2. Temukan TANGGAL transaksi pada struk jika terbaca (format YYYY-MM-DD). Jika tanggal tidak terbaca atau tidak ada pada struk, gunakan tanggal caption atau hari ini (${todayStr}).
-3. Tentukan nama toko/merchant dan ringkasan pembelian untuk 'description' (contoh: "Belanja Indomaret", "Makan di Kopi Kenangan", "SPBU Pertamina").
-4. Kategori: WAJIB pilih salah satu kategori yang paling cocok:
-   - "Konsumsi" (makanan, minuman, restoran, supermarket bahan makanan, dll)
-   - "Perlengkapan" (ATK, alat, hardware, toko bangunan/listrik, sewa alat, dll)
-   - "Transportasi" (SPBU bensin, tiket, tol, parkir, ojek/taksi)
-   - "Media" (percetakan, fotokopi, banner/poster, audio/kamera)
-   - "Peserta" (souvenir, seminar kit, nametag, sertifikat)
-   - "Honor" (tanda terima jasa, honorarium)
-   - "Bendahara" (biaya transfer, admin, penarikan kas)
-   - "Utang" (bukti pembayaran utang atau pinjaman)
-   - "Piutang" (bukti pinjaman ke pihak lain atau pelunasan)
-   - "Lain-lain"
-5. Tipe: Secara default adalah "Pengeluaran".
+Tanggal referensi hari ini: ${todayStr} (WIB).
+Caption teks dari pengguna (SANGAT PENTING jika ada): "${caption || '-'}"
 
-Kembalikan JSON dengan struktur:
+Tugas Analisis:
+1. NOMINAL (amount):
+   - Ambil jumlah uang transaksi (Nominal Transfer, Total Bayar, Grand Total, Jumlah).
+   - Pastikan angka murni (integer/number), jangan ambil saldo sisa, biaya admin saja, atau nomor rekening/referensi.
+2. TIPE (type):
+   - "Pengeluaran": jika bukti transfer keluar (kirim uang, pembayaran, transfer ke rekening lain, bayar QRIS, belanja).
+   - "Pemasukan": jika bukti transfer masuk (terima dana, transfer masuk, top up dari pihak lain).
+3. TANGGAL (date):
+   - Baca tanggal transaksi yang tertera pada bukti transfer / struk (format YYYY-MM-DD).
+   - Jika tanggal pada gambar tidak terbaca, gunakan tanggal hari ini: ${todayStr}.
+4. KETERANGAN (description):
+   - Jika Bukti Transfer: sebutkan bank/e-wallet dan nama penerima/pengirim serta berita/catatan transfer jika ada. Contoh: "Transfer BCA ke Budi (Konsumsi)", "QRIS Resto Padang", "Transfer Masuk dari Ahmad".
+   - Jika Struk Belanja: nama toko dan barang utama (contoh: "Indomaret", "SPBU Pertamina").
+   - Utamakan informasi dari Caption pengguna jika pengguna menuliskan catatan tambahan.
+5. KATEGORI (category): WAJIB pilih salah satu kategori yang paling relevan:
+   - "Konsumsi": untuk makanan, minuman, katering, resto, cafe, minimarket bahan makanan.
+   - "Perlengkapan": untuk alat, ATK, hardware, sewa alat, banner, operasional kantor/acara.
+   - "Transportasi": bensin, tiket, tol, parkir, ojek/taksi online, sewa mobil.
+   - "Honor": fee/honor pembicara, juri, pengisi acara, upah kerja, gaji.
+   - "Media": cetak flyer/poster, dokumentasi, kamera, promosi, ads.
+   - "Peserta": registrasi peserta, seminar kit, souvenir, sertifikat.
+   - "Bendahara": transfer kas, tarik tunai, kas kecil, biaya admin, uang modal.
+   - "Utang": pinjaman yang kita terima atau pembayaran cicilan/pelunasan utang ke orang lain.
+   - "Piutang": pinjaman yang kita berikan ke orang lain (kasbon) atau orang melunasi utangnya ke kita.
+   - "Lain-lain": jika tidak ada yang cocok.
+
+Kembalikan respon JSON persis dengan struktur berikut:
 {
-  "type": "Pengeluaran",
+  "type": "Pengeluaran" | "Pemasukan",
   "amount": number,
   "category": string,
   "description": string,
-  "date": "YYYY-MM-DD",
-  "rawMerchantOrItem": string
+  "date": "YYYY-MM-DD"
 }
 
-Jika gambar sama sekali bukan struk/nota belanja/bukti transfer, kembalikan JSON: null.`;
+Jika gambar sama sekali bukan bukti transfer, bukan struk/nota, dan tidak ada nominal transaksi finansial, kembalikan JSON: null.`;
 
   try {
-    const result = await model.generateContent([
+    const result = await generateWithRetry(model, [
       prompt,
       {
         inlineData: {
