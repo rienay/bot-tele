@@ -1,6 +1,8 @@
 import { google } from 'googleapis';
 import { getGoogleAuth } from './googleAuth';
-import { ParsedTransaction, SummaryReport } from './types';
+import { ParsedTransaction, SummaryReport, GlobalSummaryReport, BookSummary } from './types';
+
+export const DEFAULT_BOOK_NAME = 'Kas';
 
 const SHEET_COLUMNS = [
   'Tanggal',
@@ -12,35 +14,52 @@ const SHEET_COLUMNS = [
   'Waktu Input',
 ];
 
-function getSheetConfig() {
+const SESSION_SHEET_NAME = '_Sessions';
+
+function getSpreadsheetId(): string {
   const spreadsheetId = process.env.GOOGLE_SHEET_ID;
-  const sheetName = process.env.GOOGLE_SHEET_NAME || 'Transaksi';
   if (!spreadsheetId) {
     throw new Error('GOOGLE_SHEET_ID belum dikonfigurasi di file .env');
   }
-  return { spreadsheetId, sheetName };
+  return spreadsheetId;
+}
+
+// In-memory cache untuk sesi buku aktif pengguna (chatId -> bookName)
+const activeBookCache = new Map<string, string>();
+// In-memory cache daftar sheets dengan timestamp (TTL 30 detik)
+let cachedSheetList: { list: string[]; timestamp: number } | null = null;
+const CACHE_TTL_MS = 30_000;
+
+/**
+ * Membersihkan nama sheet agar valid di Google Sheets
+ */
+export function sanitizeBookName(rawName: string): string {
+  return rawName
+    .trim()
+    .replace(/[\\/\?\*\[\]:]/g, '') // Karakter terlarang di Google Sheets
+    .replace(/\s+/g, ' ')
+    .slice(0, 30);
 }
 
 /**
  * Memastikan header kolom sudah dibuat di Google Sheet jika masih kosong.
  */
-export async function ensureHeaderRow(): Promise<void> {
+export async function ensureHeaderRow(sheetName: string = DEFAULT_BOOK_NAME): Promise<void> {
   const auth = getGoogleAuth();
   const sheets = google.sheets({ version: 'v4', auth });
-  const { spreadsheetId, sheetName } = getSheetConfig();
+  const spreadsheetId = getSpreadsheetId();
 
   try {
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: `${sheetName}!A1:G1`,
+      range: `'${sheetName}'!A1:G1`,
     });
 
     const values = res.data.values;
     if (!values || values.length === 0 || values[0].length === 0) {
-      // Buat header baru
       await sheets.spreadsheets.values.update({
         spreadsheetId,
-        range: `${sheetName}!A1:G1`,
+        range: `'${sheetName}'!A1:G1`,
         valueInputOption: 'USER_ENTERED',
         requestBody: {
           values: [SHEET_COLUMNS],
@@ -48,8 +67,11 @@ export async function ensureHeaderRow(): Promise<void> {
       });
     }
   } catch (error: any) {
-    // Jika sheet belum ada nama sheetName, coba buatkan
-    if (error?.message?.includes('Unable to parse range')) {
+    // Jika sheet belum ada, buatkan sheet baru
+    if (
+      error?.message?.includes('Unable to parse range') ||
+      error?.message?.includes('not found')
+    ) {
       try {
         await sheets.spreadsheets.batchUpdate({
           spreadsheetId,
@@ -63,17 +85,19 @@ export async function ensureHeaderRow(): Promise<void> {
             ],
           },
         });
-        // Tulis header setelah dibuat
+        // Tulis header
         await sheets.spreadsheets.values.update({
           spreadsheetId,
-          range: `${sheetName}!A1:G1`,
+          range: `'${sheetName}'!A1:G1`,
           valueInputOption: 'USER_ENTERED',
           requestBody: {
             values: [SHEET_COLUMNS],
           },
         });
+        // Invalidate cache sheet list
+        cachedSheetList = null;
       } catch (innerErr) {
-        console.error('Gagal membuat sheet baru:', innerErr);
+        console.error(`Gagal membuat sheet baru '${sheetName}':`, innerErr);
         throw innerErr;
       }
     } else {
@@ -83,14 +107,255 @@ export async function ensureHeaderRow(): Promise<void> {
 }
 
 /**
- * Menambahkan data transaksi ke baris baru Google Sheets
+ * Mengambil daftar seluruh buku/kegiatan yang ada di spreadsheet.
+ * Mengabaikan tab internal (_Sessions) dan tab default kosong.
  */
-export async function appendTransaction(tx: ParsedTransaction): Promise<number | null> {
-  await ensureHeaderRow();
+export async function getAllSheetBooks(forceRefresh = false): Promise<string[]> {
+  const now = Date.now();
+  if (!forceRefresh && cachedSheetList && now - cachedSheetList.timestamp < CACHE_TTL_MS) {
+    return cachedSheetList.list;
+  }
 
   const auth = getGoogleAuth();
   const sheets = google.sheets({ version: 'v4', auth });
-  const { spreadsheetId, sheetName } = getSheetConfig();
+  const spreadsheetId = getSpreadsheetId();
+
+  const meta = await sheets.spreadsheets.get({ spreadsheetId });
+  const sheetsList = meta.data.sheets || [];
+
+  const validBooks: string[] = [];
+  for (const s of sheetsList) {
+    const title = s.properties?.title;
+    if (!title) continue;
+    // Abaikan sheet internal yang diawali underscore
+    if (title.startsWith('_')) continue;
+    if (title.toLowerCase() === 'sheet1') continue;
+    if (title.toLowerCase() === 'anggota' || title.toLowerCase() === 'kas_anggota') continue;
+    validBooks.push(title);
+  }
+
+  // Pastikan 'Kas' ada dalam list
+  const hasKas = validBooks.some((b) => b.toLowerCase() === DEFAULT_BOOK_NAME.toLowerCase());
+  if (!hasKas) {
+    validBooks.unshift(DEFAULT_BOOK_NAME);
+  } else {
+    // Taruh 'Kas' di urutan pertama
+    const kasIdx = validBooks.findIndex((b) => b.toLowerCase() === DEFAULT_BOOK_NAME.toLowerCase());
+    if (kasIdx > 0) {
+      const [kasItem] = validBooks.splice(kasIdx, 1);
+      validBooks.unshift(kasItem);
+    }
+  }
+
+  cachedSheetList = { list: validBooks, timestamp: now };
+  return validBooks;
+}
+
+/**
+ * Membuat sheet buku/kegiatan baru jika belum ada.
+ */
+export async function createSheetBook(
+  rawName: string
+): Promise<{ created: boolean; bookName: string }> {
+  const cleanName = sanitizeBookName(rawName);
+  if (!cleanName) {
+    throw new Error('Nama kegiatan tidak boleh kosong.');
+  }
+
+  const books = await getAllSheetBooks(true);
+  const existing = books.find((b) => b.toLowerCase() === cleanName.toLowerCase());
+  if (existing) {
+    return { created: false, bookName: existing };
+  }
+
+  const auth = getGoogleAuth();
+  const sheets = google.sheets({ version: 'v4', auth });
+  const spreadsheetId = getSpreadsheetId();
+
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId,
+    requestBody: {
+      requests: [
+        {
+          addSheet: {
+            properties: { title: cleanName },
+          },
+        },
+      ],
+    },
+  });
+
+  // Tulis header kolom
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: `'${cleanName}'!A1:G1`,
+    valueInputOption: 'USER_ENTERED',
+    requestBody: {
+      values: [SHEET_COLUMNS],
+    },
+  });
+
+  cachedSheetList = null;
+  return { created: true, bookName: cleanName };
+}
+
+/**
+ * Memastikan sheet _Sessions tersedia untuk menyimpan status buku aktif per pengguna
+ */
+async function ensureSessionSheet(): Promise<void> {
+  const auth = getGoogleAuth();
+  const sheets = google.sheets({ version: 'v4', auth });
+  const spreadsheetId = getSpreadsheetId();
+
+  try {
+    await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: `'${SESSION_SHEET_NAME}'!A1:C1`,
+    });
+  } catch (error: any) {
+    if (
+      error?.message?.includes('Unable to parse range') ||
+      error?.message?.includes('not found')
+    ) {
+      try {
+        await sheets.spreadsheets.batchUpdate({
+          spreadsheetId,
+          requestBody: {
+            requests: [
+              {
+                addSheet: {
+                  properties: { title: SESSION_SHEET_NAME },
+                },
+              },
+            ],
+          },
+        });
+        await sheets.spreadsheets.values.update({
+          spreadsheetId,
+          range: `'${SESSION_SHEET_NAME}'!A1:C1`,
+          valueInputOption: 'USER_ENTERED',
+          requestBody: {
+            values: [['Chat ID', 'Active Book', 'Updated At']],
+          },
+        });
+      } catch (e) {
+        console.warn('Gagal membuat session sheet:', e);
+      }
+    }
+  }
+}
+
+/**
+ * Mengambil nama buku aktif untuk pengguna tertentu
+ */
+export async function getUserActiveBook(chatId: number | string): Promise<string> {
+  const strId = String(chatId);
+  if (activeBookCache.has(strId)) {
+    return activeBookCache.get(strId)!;
+  }
+
+  try {
+    await ensureSessionSheet();
+    const auth = getGoogleAuth();
+    const sheets = google.sheets({ version: 'v4', auth });
+    const spreadsheetId = getSpreadsheetId();
+
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: `'${SESSION_SHEET_NAME}'!A2:B`,
+    });
+
+    const rows = res.data.values || [];
+    for (const row of rows) {
+      if (row[0] && String(row[0]).trim() === strId && row[1]) {
+        const book = String(row[1]).trim();
+        activeBookCache.set(strId, book);
+        return book;
+      }
+    }
+  } catch (err) {
+    console.warn('Gagal membaca active book dari sheet, fallback default:', err);
+  }
+
+  activeBookCache.set(strId, DEFAULT_BOOK_NAME);
+  return DEFAULT_BOOK_NAME;
+}
+
+/**
+ * Mengubah nama buku aktif untuk pengguna tertentu
+ */
+export async function setUserActiveBook(
+  chatId: number | string,
+  bookName: string
+): Promise<void> {
+  const strId = String(chatId);
+  activeBookCache.set(strId, bookName);
+
+  // Simpan secara persisten ke sheet _Sessions
+  try {
+    await ensureSessionSheet();
+    const auth = getGoogleAuth();
+    const sheets = google.sheets({ version: 'v4', auth });
+    const spreadsheetId = getSpreadsheetId();
+
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: `'${SESSION_SHEET_NAME}'!A2:C`,
+    });
+
+    const rows = res.data.values || [];
+    let existingRowIndex = -1;
+
+    for (let i = 0; i < rows.length; i++) {
+      if (rows[i][0] && String(rows[i][0]).trim() === strId) {
+        existingRowIndex = i + 2; // baris ke- (1-indexed + header)
+        break;
+      }
+    }
+
+    const nowJakarta = new Intl.DateTimeFormat('id-ID', {
+      timeZone: 'Asia/Jakarta',
+      dateStyle: 'short',
+      timeStyle: 'medium',
+    }).format(new Date());
+
+    if (existingRowIndex > 0) {
+      await sheets.spreadsheets.values.update({
+        spreadsheetId,
+        range: `'${SESSION_SHEET_NAME}'!B${existingRowIndex}:C${existingRowIndex}`,
+        valueInputOption: 'USER_ENTERED',
+        requestBody: {
+          values: [[bookName, nowJakarta]],
+        },
+      });
+    } else {
+      await sheets.spreadsheets.values.append({
+        spreadsheetId,
+        range: `'${SESSION_SHEET_NAME}'!A:C`,
+        valueInputOption: 'USER_ENTERED',
+        insertDataOption: 'INSERT_ROWS',
+        requestBody: {
+          values: [[strId, bookName, nowJakarta]],
+        },
+      });
+    }
+  } catch (err) {
+    console.error('Gagal menyimpan sesi aktif pengguna ke Google Sheet:', err);
+  }
+}
+
+/**
+ * Menambahkan data transaksi ke baris baru Google Sheets pada buku/halaman tertentu
+ */
+export async function appendTransaction(
+  tx: ParsedTransaction,
+  sheetName: string = DEFAULT_BOOK_NAME
+): Promise<number | null> {
+  await ensureHeaderRow(sheetName);
+
+  const auth = getGoogleAuth();
+  const sheets = google.sheets({ version: 'v4', auth });
+  const spreadsheetId = getSpreadsheetId();
 
   const nowJakarta = new Intl.DateTimeFormat('id-ID', {
     timeZone: 'Asia/Jakarta',
@@ -98,7 +363,6 @@ export async function appendTransaction(tx: ParsedTransaction): Promise<number |
     timeStyle: 'medium',
   }).format(new Date());
 
-  // Gunakan tanda kutip tunggal di awal agar Google Sheets menampilkannya sebagai teks tanggal yang rapi (bukan serial angka)
   const formattedDate = tx.date.startsWith("'") ? tx.date : `'${tx.date}`;
 
   const rowValues = [
@@ -113,7 +377,7 @@ export async function appendTransaction(tx: ParsedTransaction): Promise<number |
 
   const res = await sheets.spreadsheets.values.append({
     spreadsheetId,
-    range: `${sheetName}!A:G`,
+    range: `'${sheetName}'!A:G`,
     valueInputOption: 'USER_ENTERED',
     insertDataOption: 'INSERT_ROWS',
     requestBody: {
@@ -132,13 +396,12 @@ export async function appendTransaction(tx: ParsedTransaction): Promise<number |
 }
 
 /**
- * Membantu normalisasi berbagai format tanggal (serial Excel, YYYY-MM-DD, DD/MM/YYYY) ke YYYY-MM
+ * Membantu normalisasi berbagai format tanggal ke YYYY-MM
  */
 export function normalizeDateToYearMonth(val: any): string {
   if (!val) return '';
   const str = String(val).trim().replace(/^'/, '');
 
-  // Format serial number Google Sheets / Excel (contoh: 46247)
   if (/^\d{5}$/.test(str)) {
     const serial = parseInt(str, 10);
     const date = new Date((serial - 25569) * 86400 * 1000);
@@ -147,13 +410,11 @@ export function normalizeDateToYearMonth(val: any): string {
     return `${y}-${m}`;
   }
 
-  // Format YYYY-MM-DD
   const ymd = str.match(/^(\d{4})[/-](\d{1,2})/);
   if (ymd) {
     return `${ymd[1]}-${ymd[2].padStart(2, '0')}`;
   }
 
-  // Format DD/MM/YYYY
   const dmy = str.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})/);
   if (dmy) {
     return `${dmy[3]}-${dmy[2].padStart(2, '0')}`;
@@ -167,15 +428,16 @@ export function normalizeDateToYearMonth(val: any): string {
  */
 export async function updateTransactionNoteLink(
   rowNumber: number,
-  noteLink: string
+  noteLink: string,
+  sheetName: string = DEFAULT_BOOK_NAME
 ): Promise<void> {
   const auth = getGoogleAuth();
   const sheets = google.sheets({ version: 'v4', auth });
-  const { spreadsheetId, sheetName } = getSheetConfig();
+  const spreadsheetId = getSpreadsheetId();
 
   await sheets.spreadsheets.values.update({
     spreadsheetId,
-    range: `${sheetName}!F${rowNumber}`,
+    range: `'${sheetName}'!F${rowNumber}`,
     valueInputOption: 'USER_ENTERED',
     requestBody: {
       values: [[noteLink]],
@@ -184,18 +446,22 @@ export async function updateTransactionNoteLink(
 }
 
 /**
- * Mengambil rekap transaksi.
- * Jika yearMonthPrefix diberikan (misal '2026-08'), akan menghitung KHUSUS bulan tersebut.
- * Jika tidak diberikan (undefined), akan menghitung SEMUA transaksi (All-Time / Keseluruhan).
+ * Mengambil rekap transaksi untuk 1 buku/halaman tertentu
  */
-export async function getMonthSummary(yearMonthPrefix?: string, customLabel?: string): Promise<SummaryReport> {
+export async function getMonthSummary(
+  yearMonthPrefix?: string,
+  customLabel?: string,
+  sheetName: string = DEFAULT_BOOK_NAME
+): Promise<SummaryReport & { bookName: string }> {
+  await ensureHeaderRow(sheetName);
+
   const auth = getGoogleAuth();
   const sheets = google.sheets({ version: 'v4', auth });
-  const { spreadsheetId, sheetName } = getSheetConfig();
+  const spreadsheetId = getSpreadsheetId();
 
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId,
-    range: `${sheetName}!A2:E`,
+    range: `'${sheetName}'!A2:E`,
   });
 
   const rows = res.data.values || [];
@@ -251,5 +517,68 @@ export async function getMonthSummary(yearMonthPrefix?: string, customLabel?: st
     count,
     categoryExpenses,
     categoryIncome,
+    bookName: sheetName,
+  };
+}
+
+/**
+ * Mengambil rekap transaksi KESELURUHAN (Semua Tab / Kegiatan + Kas Utama)
+ */
+export async function getAllSheetsSummary(
+  yearMonthPrefix?: string,
+  customLabel?: string
+): Promise<GlobalSummaryReport> {
+  const books = await getAllSheetBooks();
+
+  let totalPengeluaran = 0;
+  let totalPemasukan = 0;
+  let count = 0;
+  const categoryExpenses: Record<string, number> = {};
+  const categoryIncome: Record<string, number> = {};
+  const booksSummary: BookSummary[] = [];
+
+  const isAllTime = !yearMonthPrefix;
+
+  for (const book of books) {
+    try {
+      const bSummary = await getMonthSummary(yearMonthPrefix, customLabel, book);
+
+      booksSummary.push({
+        bookName: book,
+        totalPengeluaran: bSummary.totalPengeluaran,
+        totalPemasukan: bSummary.totalPemasukan,
+        saldo: bSummary.saldo,
+        count: bSummary.count,
+      });
+
+      totalPengeluaran += bSummary.totalPengeluaran;
+      totalPemasukan += bSummary.totalPemasukan;
+      count += bSummary.count;
+
+      for (const [cat, val] of Object.entries(bSummary.categoryExpenses)) {
+        categoryExpenses[cat] = (categoryExpenses[cat] || 0) + val;
+      }
+      for (const [cat, val] of Object.entries(bSummary.categoryIncome)) {
+        categoryIncome[cat] = (categoryIncome[cat] || 0) + val;
+      }
+    } catch (err) {
+      console.warn(`Gagal membaca summary untuk sheet '${book}':`, err);
+    }
+  }
+
+  const periodeLabel = isAllTime
+    ? 'Semua Transaksi (Keseluruhan)'
+    : customLabel || yearMonthPrefix || '';
+
+  return {
+    isAllTime,
+    periodeLabel,
+    totalPengeluaran,
+    totalPemasukan,
+    saldo: totalPemasukan - totalPengeluaran,
+    count,
+    categoryExpenses,
+    categoryIncome,
+    books: booksSummary,
   };
 }

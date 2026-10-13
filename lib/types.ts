@@ -21,3 +21,22 @@ export interface SummaryReport {
   categoryIncome: Record<string, number>;
 }
 
+export interface BookSummary {
+  bookName: string;
+  totalPengeluaran: number;
+  totalPemasukan: number;
+  saldo: number;
+  count: number;
+}
+
+export interface GlobalSummaryReport {
+  isAllTime: boolean;
+  periodeLabel: string;
+  totalPengeluaran: number;
+  totalPemasukan: number;
+  saldo: number;
+  count: number;
+  categoryExpenses: Record<string, number>;
+  categoryIncome: Record<string, number>;
+  books: BookSummary[];
+}

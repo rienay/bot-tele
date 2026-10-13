@@ -1,11 +1,33 @@
-import { Bot, InputFile } from 'grammy';
+import { Bot, InputFile, InlineKeyboard } from 'grammy';
 import dns from 'dns';
 import { google } from 'googleapis';
-import { parseTextMessage, parseReceiptImage, getLocalTodayDateString } from './gemini';
-import { appendTransaction, getMonthSummary, updateTransactionNoteLink } from './googleSheets';
+import { parseTextMessage, parseReceiptImage } from './gemini';
+import {
+  appendTransaction,
+  getMonthSummary,
+  updateTransactionNoteLink,
+  getAllSheetBooks,
+  createSheetBook,
+  getUserActiveBook,
+  setUserActiveBook,
+  getAllSheetsSummary,
+  DEFAULT_BOOK_NAME,
+  sanitizeBookName,
+} from './googleSheets';
+import {
+  getDaftarAnggota,
+  tambahAnggota,
+  ubahStatusAnggota,
+  catatPembayaranKas,
+  cekStatusKasBulan,
+  cekStatusKasAnggota,
+  normalisasiBulan,
+  DAFTAR_BULAN,
+  NOMINAL_IURAN_DEFAULT,
+} from './kasAnggota';
 import { uploadReceiptToDrive } from './googleDrive';
 import { formatPrivateKey, getGoogleAuth } from './googleAuth';
-import { generateNotaPdf, generateNotaPng, HARGA_PER_KG, rupiahFormat } from './generateNota';
+import { generateNotaPdf, HARGA_PER_KG, rupiahFormat } from './generateNota';
 
 // Paksa IPv4 untuk menghindari timeout koneksi IPv6 ke server Telegram di jaringan Windows/ISP lokal
 try {
@@ -24,6 +46,9 @@ export const bot = new Bot(token || 'dummy_token');
 // Set untuk deduplikasi: mencegah 1 update diproses >1x akibat Telegram retry webhook
 const processedUpdateIds = new Set<number>();
 const MAX_DEDUP_CACHE = 500; // batas agar memori tidak bocor
+
+// State untuk percakapan /buat buku baru
+const createBookStates = new Map<number, boolean>();
 
 // ============================================================
 // STATE MACHINE: Percakapan multi-step untuk /nota
@@ -51,23 +76,52 @@ function formatRupiah(amount: number): string {
   }).format(amount);
 }
 
+/**
+ * Mendaftarkan / memperbarui daftar perintah bot di Telegram
+ */
+async function syncBotCommands(api: any) {
+  try {
+    const books = await getAllSheetBooks();
+    const baseCommands = [
+      { command: 'start', description: 'Panduan & menu utama' },
+      { command: 'buat', description: 'Buat catatan/buku kegiatan baru' },
+      { command: 'rekap', description: 'Rekap buku kegiatan aktif' },
+      { command: 'rekapkas', description: 'Rekap seluruh kas & kegiatan' },
+      { command: 'kas', description: 'Beralih ke buku Kas Utama' },
+      { command: 'buku', description: 'Daftar & ganti buku kegiatan' },
+      { command: 'cekkas', description: 'Cek kas anggota (lunas & belum bayar)' },
+      { command: 'bayarkas', description: 'Catat pembayaran kas anggota' },
+      { command: 'anggota', description: 'Daftar & kelola anggota kas' },
+    ];
+
+    // Tambahkan command untuk buku kegiatan yang valid (hanya huruf, angka, underscore)
+    for (const b of books) {
+      if (b.toLowerCase() === 'kas') continue;
+      const cmd = b.toLowerCase().replace(/[^a-z0-9_]/g, '');
+      if (cmd && cmd.length <= 32 && !baseCommands.some((c) => c.command === cmd)) {
+        baseCommands.push({ command: cmd, description: `Beralih ke buku ${b}` });
+      }
+    }
+
+    await api.setMyCommands(baseCommands);
+  } catch (err) {
+    console.warn('Gagal sync bot commands:', err);
+  }
+}
+
 // Middleware Keamanan: Whitelist Telegram User ID
 bot.use(async (ctx, next) => {
-  // --- Deduplikasi: skip update yang sudah pernah diproses (akibat Telegram webhook retry) ---
   const updateId = ctx.update.update_id;
   if (processedUpdateIds.has(updateId)) {
     console.warn(`[Dedup] Update ${updateId} sudah diproses, diabaikan.`);
     return;
   }
-  // Tandai sebagai sudah diproses
   processedUpdateIds.add(updateId);
-  // Bersihkan cache lama agar tidak bocor memori
   if (processedUpdateIds.size > MAX_DEDUP_CACHE) {
     const firstItem = processedUpdateIds.values().next().value;
     if (firstItem !== undefined) processedUpdateIds.delete(firstItem);
   }
 
-  // --- Whitelist Telegram User ID ---
   const allowed = process.env.ALLOWED_TELEGRAM_USER_IDS;
   if (allowed && allowed.trim() !== '') {
     const list = allowed.split(',').map((id) => id.trim());
@@ -83,24 +137,146 @@ bot.use(async (ctx, next) => {
   await next();
 });
 
+// Helper: Membangun tombol keyboard buku
+async function buildBooksKeyboard(activeBook: string): Promise<InlineKeyboard> {
+  const books = await getAllSheetBooks();
+  const keyboard = new InlineKeyboard();
+
+  books.forEach((b, idx) => {
+    const isCurrent = b.toLowerCase() === activeBook.toLowerCase();
+    const label = `${isCurrent ? '📌 ' : '📖 '}${b}${isCurrent ? ' (Aktif)' : ''}`;
+    keyboard.text(label, `switch_book:${b}`);
+    if ((idx + 1) % 2 === 0) keyboard.row();
+  });
+
+  return keyboard;
+}
+
 // Command: /start & /help
 bot.command(['start', 'help'], async (ctx) => {
   const senderId = ctx.from?.id;
+  const chatId = ctx.chat.id;
+
+  const [activeBook, books] = await Promise.all([
+    getUserActiveBook(chatId),
+    getAllSheetBooks(),
+  ]);
+
+  // Sync menu command di background
+  syncBotCommands(ctx.api).catch(() => {});
+
+  let booksListText = '';
+  for (const b of books) {
+    const cmd = b.toLowerCase().replace(/[^a-z0-9_]/g, '');
+    const isCurrent = b.toLowerCase() === activeBook.toLowerCase();
+    booksListText += `• /${cmd} — ${b} ${isCurrent ? '*(Sedang Aktif)*' : ''}\n`;
+  }
+
+  const keyboard = await buildBooksKeyboard(activeBook);
+
   await ctx.reply(
-    `👋 *Halo! Saya Bot Pencatat Keuangan Pribadi Anda.*\n\n` +
-      `💡 *Cara Penggunaan:*\n` +
-      `1. *Kirim Teks Bebas:* Langsung chat pengeluaran atau pemasukan Anda.\n` +
-      `   • \`makan siang padang 35rb\`\n` +
-      `   • \`kemarin beli bensin 50000\`\n` +
-      `   • \`dapat transfer freelance 2.5jt tanggal 15 agustus\`\n\n` +
-      `2. *Kirim Foto Nota / Struk:* Cukup kirim foto struk belanjaan Anda. AI akan otomatis membaca nominal, tanggal, dan nama toko, lalu menyimpannya ke Google Drive & Sheets!\n\n` +
-      `3. *Cek Ringkasan:* Ketik /rekap untuk melihat total pengeluaran & pemasukan bulan ini.\n\n` +
+    `👋 *Halo! Saya Bot Pencatat Keuangan & Kas Anggota.*\n\n` +
+      `📌 *Buku Aktif Saat Ini:* \`${activeBook}\`\n` +
+      `_(Semua chat transaksi & struk nota akan dicatat ke buku ini)_\n\n` +
+      `⚙️ *Menu Pembukuan & Rekap:*\n` +
+      `• /buat — *Buat Catatan/Buku Baru* (tab baru Sheets)\n` +
+      `• /rekap — *Rekap Buku Aktif* (\`${activeBook}\`)\n` +
+      `• /rekapkas — *Rekap Seluruh Kas* (semua kegiatan + kas)\n` +
+      `• /kas — Beralih ke Buku *Kas Utama*\n` +
+      `• /buku — Daftar & tombol ganti buku\n\n` +
+      `👥 *Menu Iuran Kas Anggota:*\n` +
+      `• /cekkas — *Cek Pembayaran Kas* (siapa yang lunas & belum)\n` +
+      `• /bayarkas — *Catat Bayar Kas Anggota* (otomatis masuk ke Kas)\n` +
+      `• /anggota — *Kelola Anggota* (daftar, tambah, nonaktifkan)\n\n` +
+      `📚 *Buku Kegiatan Tersedia:*\n` +
+      `${booksListText}\n` +
+      `💡 *Cara Catat Transaksi Cepat:*\n` +
+      `• Kirim teks biasa: \`makan siang 35rb\`, \`beli bensin 50rb\`\n` +
+      `• Kirim foto struk/nota belanja: otomatis dibaca AI!\n\n` +
       `🆔 _ID Telegram Anda: \`${senderId}\`_`,
+    {
+      parse_mode: 'Markdown',
+      reply_markup: keyboard,
+    }
+  );
+});
+
+// Command: /buat (Membuat kegiatan / buku baru)
+bot.command('buat', async (ctx) => {
+  const chatId = ctx.chat.id;
+  createBookStates.set(chatId, true);
+  notaStates.delete(chatId);
+
+  await ctx.reply(
+    `📝 *Buat Catatan / Buku Kegiatan Baru*\n\n` +
+      `Silakan ketik *nama kegiatan* yang ingin dibuat:\n` +
+      `_(contoh: \`jojo\`, \`pwd\`, \`gathering\`, \`renovasi\`)_\n\n` +
+      `💡 Bot akan otomatis membuatkan halaman (sheet) baru di Google Sheets Anda. Penyimpanan struk tetap terpusat di Google Drive.\n\n` +
+      `_(Ketik *batal* jika ingin membatalkan)_`,
     { parse_mode: 'Markdown' }
   );
 });
 
-// Command: /debug (Diagnostik sistem & koneksi Google Sheets di Vercel)
+// Command: /kas (Beralih ke buku Kas Utama)
+bot.command('kas', async (ctx) => {
+  const chatId = ctx.chat.id;
+  await setUserActiveBook(chatId, DEFAULT_BOOK_NAME);
+  await ctx.reply(
+    `📖 *Buku Aktif Diubah:* *Kas Utama*\n\n` +
+      `Semua transaksi dan foto nota selanjutnya akan dicatat ke tab *${DEFAULT_BOOK_NAME}*.\n` +
+      `Ketik /rekap untuk melihat rekap kas ini.`,
+    { parse_mode: 'Markdown' }
+  );
+});
+
+// Command: /buku (Melihat & memilih buku yang ada)
+bot.command('buku', async (ctx) => {
+  const chatId = ctx.chat.id;
+  const activeBook = await getUserActiveBook(chatId);
+  const keyboard = await buildBooksKeyboard(activeBook);
+
+  await ctx.reply(
+    `📚 *Pilih Buku / Halaman Kegiatan*\n\n` +
+      `📌 *Buku Aktif Saat Ini:* \`${activeBook}\`\n\n` +
+      `Silakan klik tombol di bawah untuk berpindah buku:`,
+    {
+      parse_mode: 'Markdown',
+      reply_markup: keyboard,
+    }
+  );
+});
+
+// Handler tombol Inline Keyboard (switch_book:nama_buku)
+bot.callbackQuery(/^switch_book:(.+)$/, async (ctx) => {
+  const targetBook = ctx.match[1];
+  const chatId = ctx.chat?.id;
+  if (!chatId) return;
+
+  await setUserActiveBook(chatId, targetBook);
+  await ctx.answerCallbackQuery({
+    text: `Buku aktif diubah ke: ${targetBook}`,
+  });
+
+  const keyboard = await buildBooksKeyboard(targetBook);
+  try {
+    await ctx.editMessageText(
+      `✅ *Buku Aktif Berhasil Diubah!*\n\n` +
+        `📌 *Buku Saat Ini:* \`${targetBook}\`\n\n` +
+        `Semua transaksi teks dan foto nota selanjutnya akan dicatat ke tab *${targetBook}*.\n` +
+        `• Ketik /rekap untuk rekap buku ini\n` +
+        `• Ketik /rekapkas untuk seluruh rekap kas\n` +
+        `• Ketik /kas untuk kembali ke Kas Utama`,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: keyboard,
+      }
+    );
+  } catch {
+    // Abaikan jika tidak bisa edit pesan
+  }
+});
+
+// Command: /debug
 bot.command('debug', async (ctx) => {
   const rawKey = process.env.GOOGLE_PRIVATE_KEY || '';
   const email = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || '';
@@ -108,14 +284,10 @@ bot.command('debug', async (ctx) => {
   const formatted = formatPrivateKey(rawKey);
 
   let jwtStatus = 'Testing...';
+  let booksList: string[] = [];
   try {
-    const auth = getGoogleAuth();
-    const sheets = google.sheets({ version: 'v4', auth });
-    const res = await sheets.spreadsheets.values.get({
-      spreadsheetId: sheetId,
-      range: 'Transaksi!A1:B1',
-    });
-    jwtStatus = `✅ Sukses! Kolom: ${res.data.values?.[0]?.join(', ')}`;
+    booksList = await getAllSheetBooks(true);
+    jwtStatus = `✅ Sukses! Buku terdeteksi: ${booksList.join(', ')}`;
   } catch (err: any) {
     jwtStatus = `❌ Gagal: ${err.message}`;
   }
@@ -124,10 +296,7 @@ bot.command('debug', async (ctx) => {
     `🛠️ *Laporan Diagnostik Bot*\n\n` +
     `📧 *Service Account:* \`${email || 'KOSONG'}\`\n` +
     `📊 *Sheet ID:* \`${sheetId || 'KOSONG'}\`\n` +
-    `🔑 *Raw Key Length:* ${rawKey.length} karakter\n` +
-    `✨ *Formatted Key Length:* ${formatted.length} karakter\n` +
-    `📌 *Kunci Awal:* \`${rawKey.slice(0, 30)}\`\n` +
-    `📌 *Kunci Akhir:* \`${rawKey.slice(-30)}\`\n\n` +
+    `🔑 *Key Length:* ${formatted.length} karakter\n\n` +
     `📋 *Status Google Sheets:* ${jwtStatus}`;
 
   await ctx.reply(msg, { parse_mode: 'Markdown' });
@@ -171,7 +340,6 @@ function parseMonthQuery(queryText: string): { yearMonth: string; label: string 
     dec: { code: '12', name: 'Desember' },
   };
 
-  // Cek jika format YYYY-MM (contoh: 2026-08)
   const isoMatch = clean.match(/^(\d{4})-(\d{1,2})$/);
   if (isoMatch) {
     const y = isoMatch[1];
@@ -181,11 +349,9 @@ function parseMonthQuery(queryText: string): { yearMonth: string; label: string 
     return { yearMonth: `${y}-${m}`, label: `${mName} ${y}` };
   }
 
-  // Cek apakah ada tahun di query (misal: "agustus 2026")
   const yearMatch = clean.match(/\b(20\d\d)\b/);
   const year = yearMatch ? yearMatch[1] : String(currentYear);
 
-  // Cek angka bulan 1-12
   const numMatch = clean.match(/\b([1-9]|1[0-2])\b/);
   if (numMatch && !clean.includes('-')) {
     const m = numMatch[1].padStart(2, '0');
@@ -194,7 +360,6 @@ function parseMonthQuery(queryText: string): { yearMonth: string; label: string 
     return { yearMonth: `${year}-${m}`, label: `${mName} ${year}` };
   }
 
-  // Cek nama bulan teks (misal: "agustus", "september")
   for (const [key, val] of Object.entries(monthMap)) {
     if (clean.includes(key)) {
       return { yearMonth: `${year}-${val.code}`, label: `${val.name} ${year}` };
@@ -204,65 +369,380 @@ function parseMonthQuery(queryText: string): { yearMonth: string; label: string 
   return null;
 }
 
-// Helper: Mengirim pesan rekap ke pengguna
+// Helper: Mengirim pesan rekap buku kegiatan aktif
 async function sendRekap(ctx: any, queryText: string = '') {
   try {
     await ctx.replyWithChatAction('typing');
 
+    const chatId = ctx.chat.id;
+    const activeBook = await getUserActiveBook(chatId);
     const monthInfo = parseMonthQuery(queryText);
 
-    if (monthInfo) {
-      // 1. REKAP KHUSUS BULAN TERTENTU
-      const summary = await getMonthSummary(monthInfo.yearMonth, monthInfo.label);
+    const summary = await getMonthSummary(
+      monthInfo?.yearMonth,
+      monthInfo?.label,
+      activeBook
+    );
 
-      let msg = `📊 *Rekap Keuangan — Khusus Bulan ${summary.periodeLabel}*\n\n`;
-      msg += `🟢 *Pemasukan:* ${formatRupiah(summary.totalPemasukan)}\n`;
-      msg += `🔴 *Pengeluaran:* ${formatRupiah(summary.totalPengeluaran)}\n`;
-      msg += `━━━━━━━━━━━━━━━━━━━━━\n`;
-      const selisihLabel = summary.saldo >= 0 ? '💰 *Sisa Uang (Surplus):*' : '🔻 *Defisit:*';
-      msg += `${selisihLabel} ${formatRupiah(summary.saldo)}\n`;
-      msg += `📝 *Jumlah Transaksi:* ${summary.count} transaksi\n`;
+    const isKas = activeBook.toLowerCase() === DEFAULT_BOOK_NAME.toLowerCase();
+    const judulBuku = isKas ? 'Kas Utama' : `Kegiatan "${activeBook}"`;
 
-      const expKeys = Object.keys(summary.categoryExpenses);
-      if (expKeys.length > 0) {
-        msg += `\n🏷️ *Rincian Pengeluaran:*`;
-        for (const kat of expKeys.sort((a, b) => summary.categoryExpenses[b] - summary.categoryExpenses[a])) {
-          msg += `\n • ${kat}: ${formatRupiah(summary.categoryExpenses[kat])}`;
-        }
+    let msg = `📊 *Rekap Transaksi — ${judulBuku}*\n`;
+    msg += `🗓️ *Periode:* ${summary.periodeLabel}\n\n`;
+    msg += `🟢 *Pemasukan:* ${formatRupiah(summary.totalPemasukan)}\n`;
+    msg += `🔴 *Pengeluaran:* ${formatRupiah(summary.totalPengeluaran)}\n`;
+    msg += `━━━━━━━━━━━━━━━━━━━━━\n`;
+    const selisihLabel = summary.saldo >= 0 ? '💰 *Sisa Uang (Surplus):*' : '🔻 *Defisit:*';
+    msg += `${selisihLabel} ${formatRupiah(summary.saldo)}\n`;
+    msg += `📝 *Jumlah Transaksi:* ${summary.count} transaksi\n`;
+
+    const expKeys = Object.keys(summary.categoryExpenses);
+    if (expKeys.length > 0) {
+      msg += `\n🏷️ *Rincian Pengeluaran:*`;
+      for (const kat of expKeys.sort((a, b) => summary.categoryExpenses[b] - summary.categoryExpenses[a])) {
+        msg += `\n • ${kat}: ${formatRupiah(summary.categoryExpenses[kat])}`;
       }
-
-      if (summary.count === 0) {
-        msg += `\n\nℹ️ _Belum ada transaksi yang tercatat pada bulan ${summary.periodeLabel}._`;
-      }
-
-      await ctx.reply(msg, { parse_mode: 'Markdown' });
-    } else {
-      // 2. REKAP TOTAL SEMUA TRANSAKSI (KESELURUHAN)
-      const summary = await getMonthSummary();
-
-      let msg = `📊 *Rekap Keuangan Total (Semua Transaksi)*\n\n`;
-      msg += `🟢 *Total Pemasukan:* ${formatRupiah(summary.totalPemasukan)}\n`;
-      msg += `🔴 *Total Pengeluaran:* ${formatRupiah(summary.totalPengeluaran)}\n`;
-      msg += `━━━━━━━━━━━━━━━━━━━━━\n`;
-      const saldoLabel = summary.saldo >= 0 ? '💰 *Sisa Uang (Saldo Kas Saat Ini):*' : '🔻 *Defisit Kas:*';
-      msg += `${saldoLabel} ${formatRupiah(summary.saldo)}\n`;
-      msg += `📝 *Total Seluruh Transaksi:* ${summary.count} transaksi\n`;
-
-      const expKeys = Object.keys(summary.categoryExpenses);
-      if (expKeys.length > 0) {
-        msg += `\n🏷️ *Rincian Pengeluaran per Kategori:*`;
-        for (const kat of expKeys.sort((a, b) => summary.categoryExpenses[b] - summary.categoryExpenses[a])) {
-          msg += `\n • ${kat}: ${formatRupiah(summary.categoryExpenses[kat])}`;
-        }
-      }
-
-      msg += `\n\n💡 _Tips: Untuk rekap bulan tertentu, ketik:_ \`/rekap [nama bulan]\` _(contoh:_ \`/rekap agustus\` _atau_ \`/rekap 08\`_)_`;
-
-      await ctx.reply(msg, { parse_mode: 'Markdown' });
     }
+
+    if (summary.count === 0) {
+      msg += `\n\nℹ️ _Belum ada transaksi yang tercatat pada buku ini._`;
+    }
+
+    msg += `\n\n💡 _Tips: Ketik /rekapkas untuk melihat seluruh kas & kegiatan gabungan._`;
+
+    await ctx.reply(msg, { parse_mode: 'Markdown' });
   } catch (error: any) {
     console.error('Error saat membuat rekap:', error);
     await ctx.reply(`⚠️ Gagal mengambil rekap: ${error?.message || 'Terjadi kesalahan sistem.'}`);
+  }
+}
+
+// Helper: Mengirim pesan rekap seluruh kas & semua kegiatan
+async function sendRekapKas(ctx: any, queryText: string = '') {
+  try {
+    await ctx.replyWithChatAction('typing');
+
+    const monthInfo = parseMonthQuery(queryText);
+    const globalSummary = await getAllSheetsSummary(
+      monthInfo?.yearMonth,
+      monthInfo?.label
+    );
+
+    let msg = `🏦 *Rekap Kas Keseluruhan (Semua Kegiatan)*\n`;
+    msg += `🗓️ *Periode:* ${globalSummary.periodeLabel}\n\n`;
+    msg += `🟢 *Total Pemasukan:* ${formatRupiah(globalSummary.totalPemasukan)}\n`;
+    msg += `🔴 *Total Pengeluaran:* ${formatRupiah(globalSummary.totalPengeluaran)}\n`;
+    msg += `━━━━━━━━━━━━━━━━━━━━━\n`;
+    const saldoLabel = globalSummary.saldo >= 0 ? '💰 *Total Saldo Kas:*' : '🔻 *Defisit Kas:*';
+    msg += `${saldoLabel} ${formatRupiah(globalSummary.saldo)}\n`;
+    msg += `📝 *Total Seluruh Transaksi:* ${globalSummary.count} transaksi\n`;
+
+    if (globalSummary.books.length > 0) {
+      msg += `\n📚 *Rincian per Buku / Kegiatan:*`;
+      for (const b of globalSummary.books) {
+        msg += `\n\n🔹 *${b.bookName}* (${b.count} transaksi):`;
+        msg += `\n   • Masuk: ${formatRupiah(b.totalPemasukan)}`;
+        msg += `\n   • Keluar: ${formatRupiah(b.totalPengeluaran)}`;
+        const labelS = b.saldo >= 0 ? 'Sisa' : 'Defisit';
+        msg += `\n   • ${labelS}: ${formatRupiah(b.saldo)}`;
+      }
+    }
+
+    const expKeys = Object.keys(globalSummary.categoryExpenses);
+    if (expKeys.length > 0) {
+      msg += `\n\n🏷️ *Rincian Pengeluaran Gabungan:*`;
+      for (const kat of expKeys.sort((a, b) => globalSummary.categoryExpenses[b] - globalSummary.categoryExpenses[a])) {
+        msg += `\n • ${kat}: ${formatRupiah(globalSummary.categoryExpenses[kat])}`;
+      }
+    }
+
+    await ctx.reply(msg, { parse_mode: 'Markdown' });
+  } catch (error: any) {
+    console.error('Error saat membuat rekap kas:', error);
+    await ctx.reply(`⚠️ Gagal mengambil rekap kas: ${error?.message || 'Terjadi kesalahan sistem.'}`);
+  }
+}
+
+// ============================================================
+// HANDLER KAS ANGGOTA: /cekkas, /bayarkas, /anggota, dll.
+// ============================================================
+
+/**
+ * Handler /cekkas
+ * Bisa: /cekkas (bulan ini) | /cekkas januari | /cekkas said
+ */
+async function handleCekKas(ctx: any, query: string = '') {
+  try {
+    await ctx.replyWithChatAction('typing');
+    const clean = query.trim();
+
+    const currentYear = new Date().getFullYear();
+    const yearMatch = clean.match(/\b(20\d\d)\b/);
+    const tahun = yearMatch ? parseInt(yearMatch[1], 10) : currentYear;
+    const cleanWithoutYear = clean.replace(/\b(20\d\d)\b/g, '').trim();
+
+    // 1. Cek apakah pengguna mencari nama anggota spesifik
+    if (cleanWithoutYear) {
+      const daftarAnggota = await getDaftarAnggota();
+      const matchedAnggota = daftarAnggota.find(
+        (a) =>
+          a.nama.toLowerCase() === cleanWithoutYear.toLowerCase() ||
+          a.nama.toLowerCase().includes(cleanWithoutYear.toLowerCase())
+      );
+
+      // Jika cocok nama anggota dan bukan nama bulan
+      const isBulan = normalisasiBulan(cleanWithoutYear);
+      if (matchedAnggota && !isBulan) {
+        const res = await cekStatusKasAnggota(matchedAnggota.nama, tahun);
+        let msg = `👤 *Kartu Kas Anggota:* *${res.nama}*\n`;
+        msg += `💼 *Jabatan:* ${res.jabatan}\n`;
+        msg += `📌 *Status:* ${res.status === 'Aktif' ? '🟢 Aktif' : '⏸️ Nonaktif'}\n`;
+        msg += `🗓️ *Tahun:* ${res.tahun}\n\n`;
+
+        msg += `🟢 *Bulan Lunas (${res.bulanLunas.length}):*\n`;
+        msg += res.bulanLunas.length > 0 ? res.bulanLunas.map((b) => ` • ${b}`).join('\n') : ` _Belum ada_\n`;
+
+        msg += `\n🔴 *Bulan Belum Lunas (${res.bulanBelum.length}):*\n`;
+        msg += res.bulanBelum.length > 0 ? res.bulanBelum.map((b) => ` • ${b}`).join('\n') : ` 🎉 _Semua bulan lunas!_\n`;
+
+        msg += `\n━━━━━━━━━━━━━━━━━━━━━\n`;
+        msg += `💰 *Total Kas Telah Dibayar:* *${formatRupiah(res.totalBayar)}*`;
+
+        await ctx.reply(msg, { parse_mode: 'Markdown' });
+        return;
+      }
+    }
+
+    // 2. Cek status kas per bulan
+    const currentMonthName = DAFTAR_BULAN[new Date().getMonth()];
+    const targetBulan = cleanWithoutYear ? normalisasiBulan(cleanWithoutYear) || currentMonthName : currentMonthName;
+
+    const result = await cekStatusKasBulan(targetBulan, tahun);
+
+    let msg = `📋 *Iuran Kas Anggota — ${result.bulan} ${result.tahun}*\n`;
+    msg += `💵 *Tarif:* ${formatRupiah(NOMINAL_IURAN_DEFAULT)} / anggota\n\n`;
+
+    msg += `🟢 *Sudah Bayar (${result.sudahBayar.length} orang):*\n`;
+    if (result.sudahBayar.length > 0) {
+      for (const s of result.sudahBayar) {
+        msg += ` • ${s.nama} _(Lunas)_\n`;
+      }
+    } else {
+      msg += ` _Belum ada yang membayar_\n`;
+    }
+
+    msg += `\n🔴 *Belum Bayar (${result.belumBayar.length} orang):*\n`;
+    if (result.belumBayar.length > 0) {
+      for (const b of result.belumBayar) {
+        msg += ` • ${b.nama} _(${b.jabatan})_\n`;
+      }
+    } else {
+      msg += ` 🎉 _Semua anggota aktif sudah lunas!_\n`;
+    }
+
+    msg += `\n━━━━━━━━━━━━━━━━━━━━━\n`;
+    msg += `📊 *Ringkasan Bulan ${result.bulan}:*\n`;
+    msg += `• 💰 Terkumpul: *${formatRupiah(result.totalTerkumpul)}*\n`;
+    msg += `• 🔻 Tunggakan: *${formatRupiah(result.totalTunggakan)}*\n`;
+    msg += `• 👥 Anggota Aktif: *${result.totalAnggotaAktif} orang*\n\n`;
+    msg += `💡 _Tips:_ Ketik \`/cekkas [nama]\` (contoh: \`/cekkas Said\`) untuk cek histori per orang, atau \`/cekkas [nama bulan]\`.`;
+
+    await ctx.reply(msg, { parse_mode: 'Markdown' });
+  } catch (error: any) {
+    console.error('Error saat cek kas:', error);
+    await ctx.reply(`⚠️ Gagal memeriksa kas: ${error?.message || 'Terjadi kesalahan sistem.'}`);
+  }
+}
+
+/**
+ * Handler /bayarkas
+ * Contoh: /bayarkas Said Januari 10000
+ */
+async function handleBayarKas(ctx: any, query: string = '') {
+  const clean = query.trim();
+  if (!clean) {
+    await ctx.reply(
+      `💡 *Format Mencatat Pembayaran Kas:*\n\n` +
+        `Ketik: \`/bayarkas [Nama] [Bulan] [Nominal?]\`\n\n` +
+        `*Contoh Penggunaan:*\n` +
+        `• \`/bayarkas Said Rahman Januari\`\n` +
+        `• \`/bayarkas Fajar Februari 10000\`\n` +
+        `• Atau teks bebas: \`bayar kas sulis maret\`\n\n` +
+        `_(Nominal default adalah Rp 10.000 jika tidak ditulis)_`,
+      { parse_mode: 'Markdown' }
+    );
+    return;
+  }
+
+  try {
+    await ctx.replyWithChatAction('typing');
+
+    // Parse nominal (jika ada angka di query)
+    const nominalMatch = clean.match(/\b(\d{4,7})\b/);
+    const nominal = nominalMatch ? parseInt(nominalMatch[1], 10) : NOMINAL_IURAN_DEFAULT;
+    let sisaText = clean.replace(/\b(\d{4,7})\b/g, '').trim();
+
+    // Parse tahun (jika ada)
+    const currentYear = new Date().getFullYear();
+    const yearMatch = sisaText.match(/\b(20\d\d)\b/);
+    const tahun = yearMatch ? parseInt(yearMatch[1], 10) : currentYear;
+    sisaText = sisaText.replace(/\b(20\d\d)\b/g, '').trim();
+
+    // Cari bulan
+    let foundBulan: string | null = null;
+    const tokens = sisaText.split(/\s+/);
+    let bulanIndex = -1;
+
+    for (let i = 0; i < tokens.length; i++) {
+      const bNorm = normalisasiBulan(tokens[i]);
+      if (bNorm) {
+        foundBulan = bNorm;
+        bulanIndex = i;
+        break;
+      }
+    }
+
+    if (!foundBulan) {
+      // Default bulan saat ini jika tidak ditulis
+      foundBulan = DAFTAR_BULAN[new Date().getMonth()];
+    }
+
+    // Nama anggota adalah sisa kata
+    let namaAnggota = '';
+    if (bulanIndex !== -1) {
+      tokens.splice(bulanIndex, 1);
+      namaAnggota = tokens.join(' ').replace(/^(untuk|bulan|kas)\s+/gi, '').trim();
+    } else {
+      namaAnggota = sisaText.replace(/^(untuk|bulan|kas)\s+/gi, '').trim();
+    }
+
+    if (!namaAnggota) {
+      await ctx.reply('⚠️ Mohon sebutkan nama anggota yang membayar. Contoh: `/bayarkas Said Januari`', { parse_mode: 'Markdown' });
+      return;
+    }
+
+    const res = await catatPembayaranKas(namaAnggota, foundBulan, tahun, nominal);
+    if (!res.success) {
+      await ctx.reply(res.message, { parse_mode: 'Markdown' });
+      return;
+    }
+
+    await ctx.reply(
+      `✅ *Pembayaran Kas Berhasil Dicatat!*\n\n` +
+        `👤 *Anggota:* *${res.nama}*\n` +
+        `🗓️ *Iuran Bulan:* *${res.bulan} ${res.tahun}*\n` +
+        `💰 *Nominal:* *${formatRupiah(res.nominal)}*\n` +
+        `📝 *Status:* Lunas\n\n` +
+        `📊 _Tercatat di tab *Kas_Anggota* dan otomatis masuk sebagai Pemasukan di tab *Kas Utama*._`,
+      { parse_mode: 'Markdown' }
+    );
+  } catch (error: any) {
+    console.error('Error saat mencatat pembayaran kas:', error);
+    await ctx.reply(`❌ Gagal mencatat kas: ${error?.message || 'Terjadi kesalahan sistem.'}`);
+  }
+}
+
+/**
+ * Handler /anggota
+ */
+async function handleDaftarAnggota(ctx: any) {
+  try {
+    await ctx.replyWithChatAction('typing');
+    const anggota = await getDaftarAnggota();
+
+    const aktif = anggota.filter((a) => a.status === 'Aktif');
+    const nonaktif = anggota.filter((a) => a.status === 'Nonaktif');
+
+    let msg = `👥 *Daftar Anggota Kas*\n\n`;
+
+    msg += `🟢 *Anggota Aktif (${aktif.length} orang):*\n`;
+    for (const a of aktif) {
+      msg += ` • *${a.nama}* — _${a.jabatan}_\n`;
+    }
+
+    if (nonaktif.length > 0) {
+      msg += `\n⏸️ *Anggota Nonaktif (${nonaktif.length} orang):*\n`;
+      for (const a of nonaktif) {
+        msg += ` • ~${a.nama}~ — _${a.jabatan}_\n`;
+      }
+    }
+
+    msg += `\n━━━━━━━━━━━━━━━━━━━━━\n`;
+    msg += `⚙️ *Perintah Pengelolaan Anggota:*\n`;
+    msg += `• \`/tambahanggota [Nama]\` — Tambah anggota baru\n`;
+    msg += `• \`/nonaktifanggota [Nama]\` — Nonaktifkan anggota\n`;
+    msg += `• \`/aktifkananggota [Nama]\` — Aktifkan kembali anggota`;
+
+    await ctx.reply(msg, { parse_mode: 'Markdown' });
+  } catch (error: any) {
+    console.error('Error saat mengambil daftar anggota:', error);
+    await ctx.reply(`⚠️ Gagal mengambil daftar anggota: ${error?.message || 'Terjadi kesalahan sistem.'}`);
+  }
+}
+
+/**
+ * Handler /tambahanggota
+ */
+async function handleTambahAnggota(ctx: any, query: string = '') {
+  const clean = query.trim();
+  if (!clean) {
+    await ctx.reply(
+      `💡 *Format Tambah Anggota:*\nKetik: \`/tambahanggota [Nama Lengkap]\`\n\n_Contoh:_ \`/tambahanggota Budi Santoso\``,
+      { parse_mode: 'Markdown' }
+    );
+    return;
+  }
+
+  try {
+    await ctx.replyWithChatAction('typing');
+    const res = await tambahAnggota(clean);
+    await ctx.reply(res.message, { parse_mode: 'Markdown' });
+  } catch (error: any) {
+    await ctx.reply(`❌ Gagal menambah anggota: ${error?.message}`);
+  }
+}
+
+/**
+ * Handler /nonaktifanggota
+ */
+async function handleNonaktifAnggota(ctx: any, query: string = '') {
+  const clean = query.trim();
+  if (!clean) {
+    await ctx.reply(
+      `💡 *Format Nonaktifkan Anggota:*\nKetik: \`/nonaktifanggota [Nama Anggota]\`\n\n_Contoh:_ \`/nonaktifanggota Zulfa\`\n\n_(Anggota nonaktif tidak akan ditagih iuran kas lagi)_`,
+      { parse_mode: 'Markdown' }
+    );
+    return;
+  }
+
+  try {
+    await ctx.replyWithChatAction('typing');
+    const res = await ubahStatusAnggota(clean, 'Nonaktif');
+    await ctx.reply(res.message, { parse_mode: 'Markdown' });
+  } catch (error: any) {
+    await ctx.reply(`❌ Gagal menonaktifkan anggota: ${error?.message}`);
+  }
+}
+
+/**
+ * Handler /aktifkananggota
+ */
+async function handleAktifkanAnggota(ctx: any, query: string = '') {
+  const clean = query.trim();
+  if (!clean) {
+    await ctx.reply(
+      `💡 *Format Aktifkan Anggota:*\nKetik: \`/aktifkananggota [Nama Anggota]\`\n\n_Contoh:_ \`/aktifkananggota Zulfa\``,
+      { parse_mode: 'Markdown' }
+    );
+    return;
+  }
+
+  try {
+    await ctx.replyWithChatAction('typing');
+    const res = await ubahStatusAnggota(clean, 'Aktif');
+    await ctx.reply(res.message, { parse_mode: 'Markdown' });
+  } catch (error: any) {
+    await ctx.reply(`❌ Gagal mengaktifkan anggota: ${error?.message}`);
   }
 }
 
@@ -273,26 +753,67 @@ bot.command(['rekap', 'recap'], async (ctx) => {
   await sendRekap(ctx, parts);
 });
 
+// Command: /rekapkas (Rekap total seluruh kas dan semua kegiatan)
+bot.command(['rekapkas', 'recapkas'], async (ctx) => {
+  const text = ctx.message?.text || '';
+  const parts = text.split(' ').slice(1).join(' ').trim();
+  await sendRekapKas(ctx, parts);
+});
+
+// Command Kas Anggota
+bot.command('cekkas', async (ctx) => {
+  const text = ctx.message?.text || '';
+  const parts = text.split(' ').slice(1).join(' ').trim();
+  await handleCekKas(ctx, parts);
+});
+
+bot.command('bayarkas', async (ctx) => {
+  const text = ctx.message?.text || '';
+  const parts = text.split(' ').slice(1).join(' ').trim();
+  await handleBayarKas(ctx, parts);
+});
+
+bot.command('anggota', async (ctx) => {
+  await handleDaftarAnggota(ctx);
+});
+
+bot.command('tambahanggota', async (ctx) => {
+  const text = ctx.message?.text || '';
+  const parts = text.split(' ').slice(1).join(' ').trim();
+  await handleTambahAnggota(ctx, parts);
+});
+
+bot.command(['nonaktifanggota', 'nonaktifkananggota'], async (ctx) => {
+  const text = ctx.message?.text || '';
+  const parts = text.split(' ').slice(1).join(' ').trim();
+  await handleNonaktifAnggota(ctx, parts);
+});
+
+bot.command('aktifkananggota', async (ctx) => {
+  const text = ctx.message?.text || '';
+  const parts = text.split(' ').slice(1).join(' ').trim();
+  await handleAktifkanAnggota(ctx, parts);
+});
+
 // ============================================================
 // Command: /nota — mulai percakapan buat nota
 // ============================================================
 bot.command('nota', async (ctx) => {
   const chatId = ctx.chat.id;
+  createBookStates.delete(chatId);
   notaStates.set(chatId, { step: 'invoice_no', data: { items: [] } });
   await ctx.reply(
     `📋 *Buat Nota AJP*\n\n` +
-    `Masukkan *No. Invoice:*\n` +
-    `_(contoh: 011/AJP/JJ/2026)_`,
+      `Masukkan *No. Invoice:*\n` +
+      `_(contoh: 011/AJP/JJ/2026)_`,
     { parse_mode: 'Markdown' }
   );
 });
 
-// ============================================================
 // Proses setiap langkah percakapan /nota
-// ============================================================
 async function processNotaStep(ctx: any, chatId: number, text: string): Promise<boolean> {
   const state = notaStates.get(chatId);
-  if (!state) return false; // Bukan dalam mode nota
+  if (!state) return false;
 
   switch (state.step) {
     case 'invoice_no':
@@ -300,7 +821,7 @@ async function processNotaStep(ctx: any, chatId: number, text: string): Promise<
       state.step = 'tanggal';
       await ctx.reply(
         `✅ No. Invoice: *${text}*\n\n` +
-        `📅 Masukkan *Tanggal:*\n_(contoh: 22 September 2026)_`,
+          `📅 Masukkan *Tanggal:*\n_(contoh: 22 September 2026)_`,
         { parse_mode: 'Markdown' }
       );
       break;
@@ -310,7 +831,7 @@ async function processNotaStep(ctx: any, chatId: number, text: string): Promise<
       state.step = 'nama';
       await ctx.reply(
         `✅ Tanggal: *${text}*\n\n` +
-        `👤 Masukkan *Nama penerima (Kepada Yth.):*`,
+          `👤 Masukkan *Nama penerima (Kepada Yth.):*`,
         { parse_mode: 'Markdown' }
       );
       break;
@@ -320,7 +841,7 @@ async function processNotaStep(ctx: any, chatId: number, text: string): Promise<
       state.step = 'alamat';
       await ctx.reply(
         `✅ Nama: *${text}*\n\n` +
-        `📍 Masukkan *Alamat penerima:*`,
+          `📍 Masukkan *Alamat penerima:*`,
         { parse_mode: 'Markdown' }
       );
       break;
@@ -330,7 +851,7 @@ async function processNotaStep(ctx: any, chatId: number, text: string): Promise<
       state.step = 'catatan';
       await ctx.reply(
         `✅ Alamat: *${text}*\n\n` +
-        `📝 Masukkan *Catatan nota:*\n_(keterangan kegiatan)_`,
+          `📝 Masukkan *Catatan nota:*\n_(keterangan kegiatan)_`,
         { parse_mode: 'Markdown' }
       );
       break;
@@ -340,19 +861,17 @@ async function processNotaStep(ctx: any, chatId: number, text: string): Promise<
       state.step = 'items';
       await ctx.reply(
         `✅ Catatan dicatat.\n\n` +
-        `⚖️ *Item 1 — Berat Bersih (kg):*\n_(ketik angka saja, contoh: \`54\`)_`,
+          `⚖️ *Item 1 — Berat Bersih (kg):*\n_(ketik angka saja, contoh: \`54\`)_`,
         { parse_mode: 'Markdown' }
       );
       break;
 
     case 'items': {
-      // Cek apakah user sudah ketik 'selesai'
       if (text.toLowerCase() === 'selesai' || text.toLowerCase() === 'done') {
         if (state.data.items.length === 0) {
           await ctx.reply('⚠️ Belum ada item yang ditambahkan. Masukkan berat (kg) minimal 1 item.');
           break;
         }
-        // Generate nota PDF
         notaStates.delete(chatId);
         await ctx.reply('⏳ _Sedang membuat nota PDF..._', { parse_mode: 'Markdown' });
         try {
@@ -385,13 +904,12 @@ async function processNotaStep(ctx: any, chatId: number, text: string): Promise<
         break;
       }
 
-      // Parse berat (kg)
       const kg = parseFloat(text.replace(',', '.'));
       if (isNaN(kg) || kg <= 0) {
         await ctx.reply(
           '⚠️ Format tidak dikenali. Masukkan angka berat dalam kg.\n' +
-          `_(contoh: \`54\` atau \`12.5\`)_\n\n` +
-          `Atau ketik *selesai* jika sudah selesai menambah item.`,
+            `_(contoh: \`54\` atau \`12.5\`)_\n\n` +
+            `Atau ketik *selesai* jika sudah selesai menambah item.`,
           { parse_mode: 'Markdown' }
         );
         break;
@@ -403,11 +921,8 @@ async function processNotaStep(ctx: any, chatId: number, text: string): Promise<
       const nextItemNum = itemIdx + 1;
 
       if (itemIdx >= 10) {
-        // Sudah 10 item (max), langsung generate
         notaStates.delete(chatId);
         await ctx.reply('✅ Item penuh (maks 10). Membuat nota...');
-        // Trigger generate — reuse code dari 'selesai'
-        // Kirim sebagai rekursif tidak ideal, jadi panggil langsung
         const pdfBuffer = await generateNotaPdf({
           noInvoice: state.data.noInvoice!,
           tanggal: state.data.tanggal!,
@@ -425,14 +940,14 @@ async function processNotaStep(ctx: any, chatId: number, text: string): Promise<
       } else {
         await ctx.reply(
           `✅ Item ${itemIdx}: *${kg} kg* × Rp 7.200 = *${rupiahFormat(jumlah)}*\n\n` +
-          `⚖️ *Item ${nextItemNum}* _(atau ketik *selesai* jika sudah):_`,
+            `⚖️ *Item ${nextItemNum}* _(atau ketik *selesai* jika sudah):_`,
           { parse_mode: 'Markdown' }
         );
       }
       break;
     }
   }
-  return true; // Sudah ditangani oleh nota state machine
+  return true;
 }
 
 // Handler: Pesan Teks
@@ -440,26 +955,160 @@ bot.on('message:text', async (ctx) => {
   const text = ctx.message.text.trim();
   const chatId = ctx.chat.id;
 
-  // === Cek apakah pengguna sedang dalam mode /nota ===
+  // === 1. Cek apakah pengguna sedang dalam proses /buat buku baru ===
+  if (createBookStates.has(chatId)) {
+    if (text.toLowerCase() === 'batal' || text === '/batal') {
+      createBookStates.delete(chatId);
+      await ctx.reply('❌ Pembuatan buku dibatalkan.');
+      return;
+    }
+
+    const cleanName = sanitizeBookName(text);
+    if (!cleanName || cleanName.length < 2) {
+      await ctx.reply(
+        '⚠️ Nama kegiatan terlalu pendek. Masukkan minimal 2 karakter, atau ketik *batal*:',
+        { parse_mode: 'Markdown' }
+      );
+      return;
+    }
+
+    await ctx.replyWithChatAction('typing');
+    try {
+      const result = await createSheetBook(cleanName);
+      await setUserActiveBook(chatId, result.bookName);
+      createBookStates.delete(chatId);
+
+      // Sync menu command di background
+      syncBotCommands(ctx.api).catch(() => {});
+
+      const cmd = result.bookName.toLowerCase().replace(/[^a-z0-9_]/g, '');
+      await ctx.reply(
+        `🎉 *Buku Kegiatan Berhasil Dibuat!*\n\n` +
+          `📖 *Buku Aktif Sekarang:* \`${result.bookName}\`\n` +
+          `📊 Tab baru *${result.bookName}* telah siap di Google Sheets Anda.\n\n` +
+          `Mulai sekarang:\n` +
+          `• Chat transaksi & foto nota Anda akan dicatat ke buku ini.\n` +
+          `• Ketik /rekap untuk melihat rekap kegiatan ini.\n` +
+          `• Ketik /rekapkas untuk melihat rekap seluruh kas & kegiatan.\n` +
+          `• Ketik /kas untuk kembali ke Kas Utama.\n` +
+          `• Ketik /${cmd} kapan saja untuk berpindah ke buku ini.`,
+        { parse_mode: 'Markdown' }
+      );
+    } catch (err: any) {
+      console.error('Gagal membuat buku:', err);
+      await ctx.reply(`❌ Gagal membuat buku: ${err.message}`);
+    }
+    return;
+  }
+
+  // === 2. Cek apakah pengguna sedang dalam mode /nota ===
   if (notaStates.has(chatId)) {
     await processNotaStep(ctx, chatId, text);
     return;
   }
 
-  // Skip: jika ini adalah perintah slash (sudah ditangani oleh bot.command di atas)
+  // === 3. Deteksi Perintah Cepat Kas Anggota Berbasis Teks Bebas ===
+  const textLower = text.toLowerCase();
+
+  if (textLower.startsWith('cek kas') || textLower.startsWith('cekkas')) {
+    const q = text.replace(/^(cek\s*kas|cekkas)/i, '').trim();
+    await handleCekKas(ctx, q);
+    return;
+  }
+
+  if (textLower.startsWith('bayar kas') || textLower.startsWith('bayarkas')) {
+    const q = text.replace(/^(bayar\s*kas|bayarkas)/i, '').trim();
+    await handleBayarKas(ctx, q);
+    return;
+  }
+
+  if (textLower.startsWith('tambah anggota') || textLower.startsWith('tambahanggota')) {
+    const q = text.replace(/^(tambah\s*anggota|tambahanggota)/i, '').trim();
+    await handleTambahAnggota(ctx, q);
+    return;
+  }
+
+  if (
+    textLower.startsWith('nonaktifkan anggota') ||
+    textLower.startsWith('nonaktif anggota') ||
+    textLower.startsWith('nonaktifkan') ||
+    textLower.startsWith('nonaktifanggota')
+  ) {
+    const q = text.replace(/^(nonaktifkan\s*anggota|nonaktif\s*anggota|nonaktifkan|nonaktifanggota)/i, '').trim();
+    await handleNonaktifAnggota(ctx, q);
+    return;
+  }
+
+  if (
+    textLower.startsWith('aktifkan anggota') ||
+    textLower.startsWith('aktifkan') ||
+    textLower.startsWith('aktifkananggota')
+  ) {
+    const q = text.replace(/^(aktifkan\s*anggota|aktifkan|aktifkananggota)/i, '').trim();
+    await handleAktifkanAnggota(ctx, q);
+    return;
+  }
+
+  // === 4. Cek apakah ini perintah slash (misal /pwd, /jojo, /rekap, dll) ===
   if (text.startsWith('/')) {
-    // Hanya balas jika bukan perintah yang dikenal (bukan /rekap, /start, /help, /debug)
-    const knownCommands = ['/rekap', '/recap', '/start', '/help', '/debug', '/nota'];
-    const isKnown = knownCommands.some((cmd) => text.toLowerCase().startsWith(cmd));
-    if (!isKnown) {
-      await ctx.reply('❓ Perintah tidak dikenali. Ketik /help untuk melihat panduan atau /rekap untuk melihat ringkasan keuangan.');
+    const rawCmd = text.slice(1).split(/[\s@]/)[0].toLowerCase();
+
+    // Cek apakah perintah ini cocok dengan nama salah satu buku kegiatan yang ada (contoh: /pwd, /raimuna)
+    const books = await getAllSheetBooks();
+    const matchedBook = books.find((b) => {
+      const bCmd = b.toLowerCase().replace(/[^a-z0-9_]/g, '');
+      return bCmd === rawCmd || b.toLowerCase() === rawCmd;
+    });
+
+    if (matchedBook) {
+      await setUserActiveBook(chatId, matchedBook);
+      const isKas = matchedBook.toLowerCase() === DEFAULT_BOOK_NAME.toLowerCase();
+      await ctx.reply(
+        `📖 *Buku Aktif Diubah ke:* *${matchedBook}* ${isKas ? '(Kas Utama)' : ''}\n\n` +
+          `Semua catatan transaksi & foto nota berikutnya akan disimpan ke tab *${matchedBook}*.\n` +
+          `• Ketik /rekap untuk melihat rekap buku ini\n` +
+          `• Ketik /rekapkas untuk seluruh rekap kas\n` +
+          `• Ketik /kas untuk kembali ke Kas Utama`,
+        { parse_mode: 'Markdown' }
+      );
+      return;
+    }
+
+    // Perintah yang sudah ditangani bot.command
+    const standardCmds = [
+      'start',
+      'help',
+      'buat',
+      'kas',
+      'buku',
+      'rekap',
+      'recap',
+      'rekapkas',
+      'recapkas',
+      'cekkas',
+      'bayarkas',
+      'anggota',
+      'tambahanggota',
+      'nonaktifanggota',
+      'nonaktifkananggota',
+      'aktifkananggota',
+      'nota',
+      'debug',
+    ];
+
+    if (!standardCmds.includes(rawCmd)) {
+      await ctx.reply(
+        '❓ Perintah tidak dikenali.\n' +
+          '• Ketik /start untuk melihat menu dan daftar buku\n' +
+          '• Ketik /cekkas untuk cek status iuran kas anggota\n' +
+          '• Ketik /bayarkas untuk catat bayar kas'
+      );
     }
     return;
   }
 
   // Trigger nota via teks bebas
   if (text.toLowerCase().startsWith('buat nota') || text.toLowerCase() === 'nota') {
-    const cmdCtx = { ...ctx, message: { ...ctx.message, text: '/nota' } };
     notaStates.set(chatId, { step: 'invoice_no', data: { items: [] } });
     await ctx.reply(
       `📋 *Buat Nota AJP*\n\nMasukkan *No. Invoice:*\n_(contoh: 011/AJP/JJ/2026)_`,
@@ -468,15 +1117,25 @@ bot.on('message:text', async (ctx) => {
     return;
   }
 
-  // Jika pengguna mengetik 'rekap' atau 'recap' tanpa tanda slash
+  // Jika pengguna mengetik 'rekapkas' tanpa slash
+  if (text.toLowerCase().startsWith('rekapkas') || text.toLowerCase().startsWith('recapkas')) {
+    const parts = text.split(' ').slice(1).join(' ').trim();
+    await sendRekapKas(ctx, parts);
+    return;
+  }
+
+  // Jika pengguna mengetik 'rekap' tanpa slash
   if (text.toLowerCase().startsWith('rekap') || text.toLowerCase().startsWith('recap')) {
     const parts = text.split(' ').slice(1).join(' ').trim();
     await sendRekap(ctx, parts);
     return;
   }
 
+  // === 5. Pencatatan Transaksi Normal Berbasis Teks ===
   try {
     await ctx.replyWithChatAction('typing');
+
+    const activeBook = await getUserActiveBook(chatId);
     const parsed = await parseTextMessage(text);
 
     if (!parsed) {
@@ -485,18 +1144,19 @@ bot.on('message:text', async (ctx) => {
           `Contoh yang bisa dipahami:\n` +
           `• \`Makan sate 45rb\`\n` +
           `• \`Kemarin ganti oli motor 75.000\`\n` +
-          `• \`Gaji kantor 8jt tanggal 25\``
+          `• \`bayar kas Said Januari\` (untuk iuran anggota)\n` +
+          `• Ketik /cekkas untuk cek iuran kas anggota`
       );
       return;
     }
 
-    // Simpan ke Google Sheets
-    await appendTransaction(parsed);
+    // Simpan ke sheet buku yang sedang aktif
+    await appendTransaction(parsed, activeBook);
 
-    // Kirim konfirmasi SEGERA (tidak menunggu rekap)
     const emoji = parsed.type === 'Pemasukan' ? '🟢' : '🔴';
     await ctx.reply(
       `✅ *Transaksi Berhasil Dicatat!*\n\n` +
+        `📖 *Buku:* \`${activeBook}\`\n` +
         `📅 *Tanggal:* ${parsed.date}\n` +
         `${emoji} *Jenis:* ${parsed.type}\n` +
         `📂 *Kategori:* ${parsed.category}\n` +
@@ -505,21 +1165,21 @@ bot.on('message:text', async (ctx) => {
       { parse_mode: 'Markdown' }
     );
 
-    // Kirim rekap di background (tidak memblokir respon utama)
+    // Kirim rekap singkat di background
     (async () => {
       try {
-        const summary = await getMonthSummary();
+        const summary = await getMonthSummary(undefined, undefined, activeBook);
         const saldoLabel = summary.saldo >= 0 ? '💰 *Sisa:*' : '🔻 *Defisit:*';
         await ctx.reply(
           `━━━━━━━━━━━━━━━━━━━━━\n` +
-          `📊 *Rekap Transaksi:*\n` +
-          `🟢 Masuk: ${formatRupiah(summary.totalPemasukan)}\n` +
-          `🔴 Keluar: ${formatRupiah(summary.totalPengeluaran)}\n` +
-          `${saldoLabel} ${formatRupiah(Math.abs(summary.saldo))}`,
+            `📊 *Rekap Buku [${activeBook}]:*\n` +
+            `🟢 Masuk: ${formatRupiah(summary.totalPemasukan)}\n` +
+            `🔴 Keluar: ${formatRupiah(summary.totalPengeluaran)}\n` +
+            `${saldoLabel} ${formatRupiah(Math.abs(summary.saldo))}`,
           { parse_mode: 'Markdown' }
         );
       } catch {
-        // Jika rekap gagal, tidak mengganggu pesan utama
+        // Abaikan jika rekap background gagal
       }
     })();
   } catch (error: any) {
@@ -532,6 +1192,8 @@ bot.on('message:text', async (ctx) => {
 
 // Handler: Foto Nota / Struk
 bot.on(['message:photo', 'message:document'], async (ctx) => {
+  const chatId = ctx.chat.id;
+
   try {
     let fileId: string | undefined;
     let fileName = `nota_${Date.now()}.jpg`;
@@ -555,12 +1217,14 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
       return;
     }
 
-    await ctx.reply('🔍 *Menganalisis foto nota & mengunggah ke Google Drive...*', {
-      parse_mode: 'Markdown',
-    });
+    const activeBook = await getUserActiveBook(chatId);
+
+    await ctx.reply(
+      `🔍 *Menganalisis foto nota untuk buku [${activeBook}] & mengunggah ke Google Drive...*`,
+      { parse_mode: 'Markdown' }
+    );
     await ctx.replyWithChatAction('upload_photo');
 
-    // Download file dari server Telegram
     const file = await ctx.api.getFile(fileId);
     if (!file.file_path) {
       throw new Error('Tidak dapat mengunduh file dari Telegram.');
@@ -575,7 +1239,7 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
     const arrayBuffer = await response.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
-    // Proses OCR dengan Gemini terlebih dahulu agar transaksi langsung tercatat tanpa menunggu upload Drive
+    // OCR dengan Gemini
     const parsed = await parseReceiptImage(buffer, mimeType, ctx.message.caption);
 
     if (!parsed) {
@@ -585,13 +1249,13 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
       return;
     }
 
-    // 1. Simpan segera ke Google Sheets
-    const rowNumber = await appendTransaction(parsed);
+    // Simpan segera ke Google Sheets pada sheet buku yang aktif
+    const rowNumber = await appendTransaction(parsed, activeBook);
 
-    // 2. Kirim konfirmasi SEGERA ke pengguna (tidak menunggu rekap & upload Drive)
     const emoji = parsed.type === 'Pemasukan' ? '🟢' : '🔴';
     await ctx.reply(
       `🧾 *Transaksi Berhasil Dicatat!*\n\n` +
+        `📖 *Buku:* \`${activeBook}\`\n` +
         `📅 *Tanggal:* ${parsed.date}\n` +
         `${emoji} *Jenis:* ${parsed.type}\n` +
         `📂 *Kategori:* ${parsed.category}\n` +
@@ -601,22 +1265,22 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
       { parse_mode: 'Markdown' }
     );
 
-    // 3. Kirim rekap & upload Drive di background (tidak memblokir respon utama)
+    // Upload ke Drive & rekap di latar belakang
     (async () => {
-      // Rekap transaksi
+      // Rekap singkat
       try {
-        const summary = await getMonthSummary();
+        const summary = await getMonthSummary(undefined, undefined, activeBook);
         const saldoLabel = summary.saldo >= 0 ? '💰 *Sisa:*' : '🔻 *Defisit:*';
         await ctx.reply(
           `━━━━━━━━━━━━━━━━━━━━━\n` +
-          `📊 *Rekap Transaksi:*\n` +
-          `🟢 Masuk: ${formatRupiah(summary.totalPemasukan)}\n` +
-          `🔴 Keluar: ${formatRupiah(summary.totalPengeluaran)}\n` +
-          `${saldoLabel} ${formatRupiah(Math.abs(summary.saldo))}`,
+            `📊 *Rekap Buku [${activeBook}]:*\n` +
+            `🟢 Masuk: ${formatRupiah(summary.totalPemasukan)}\n` +
+            `🔴 Keluar: ${formatRupiah(summary.totalPengeluaran)}\n` +
+            `${saldoLabel} ${formatRupiah(Math.abs(summary.saldo))}`,
           { parse_mode: 'Markdown' }
         );
       } catch {
-        // Jika rekap gagal, tidak mengganggu
+        // Abaikan jika rekap background gagal
       }
 
       // Upload ke Google Drive
@@ -624,10 +1288,11 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
         const driveLink = await uploadReceiptToDrive(buffer, fileName, mimeType);
         if (driveLink) {
           if (rowNumber) {
-            await updateTransactionNoteLink(rowNumber, driveLink).catch(console.error);
+            await updateTransactionNoteLink(rowNumber, driveLink, activeBook).catch(console.error);
           }
           await ctx.reply(
             `📎 *Foto Tersimpan di Google Drive!*\n` +
+              `📖 *Buku:* ${activeBook}\n` +
               `📝 *Item:* ${parsed.description} (${formatRupiah(parsed.amount)})\n` +
               `🔗 [Buka Foto di Google Drive](${driveLink})`,
             { parse_mode: 'Markdown', link_preview_options: { is_disabled: true } }
@@ -649,7 +1314,7 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
       await ctx.reply(
         '⏳ *Batas Kecepatan AI (429)*\n\n' +
           'Google Gemini sedang mencapai batas kuota per menit.\n' +
-          'Sistem sudah disiapkan dengan model cadangan otomatis. Silakan tunggu sekitar *15-30 detik*, lalu kirim ulang foto Anda ya!',
+          'Silakan tunggu sekitar *15-30 detik*, lalu kirim ulang foto Anda ya!',
         { parse_mode: 'Markdown' }
       );
     } else {
@@ -659,4 +1324,3 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
     }
   }
 });
-
