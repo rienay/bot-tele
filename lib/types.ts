@@ -10,6 +10,14 @@ export interface ParsedTransaction {
   rawMerchantOrItem?: string;
 }
 
+export interface ExpenseDetail {
+  date: string;
+  category: string;
+  nominal: number;
+  description: string;
+  noteLink?: string;
+}
+
 export interface SummaryReport {
   isAllTime: boolean;
   periodeLabel: string;
@@ -19,6 +27,8 @@ export interface SummaryReport {
   count: number;
   categoryExpenses: Record<string, number>;
   categoryIncome: Record<string, number>;
+  expenseDetails: ExpenseDetail[];
+  incomeDetails?: ExpenseDetail[];
 }
 
 export interface BookSummary {

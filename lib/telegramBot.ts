@@ -369,6 +369,34 @@ function parseMonthQuery(queryText: string): { yearMonth: string; label: string 
   return null;
 }
 
+// Helper format tanggal Indonesia
+function formatIndonesianDate(isoDate: string): string {
+  const clean = String(isoDate).trim().replace(/^'/, '');
+  const match = clean.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return clean;
+  const [, y, m, d] = match;
+  const namaBulan: Record<string, string> = {
+    '01': 'Januari',
+    '02': 'Februari',
+    '03': 'Maret',
+    '04': 'April',
+    '05': 'Mei',
+    '06': 'Juni',
+    '07': 'Juli',
+    '08': 'Agustus',
+    '09': 'September',
+    '10': 'Oktober',
+    '11': 'November',
+    '12': 'Desember',
+  };
+  const bulan = namaBulan[m] || m;
+  return `${parseInt(d, 10)} ${bulan} ${y}`;
+}
+
+function escapeTelegramMarkdown(text: string): string {
+  return String(text || '').replace(/[_*[\]`\\]/g, '\\$&');
+}
+
 // Helper: Mengirim pesan rekap buku kegiatan aktif
 async function sendRekap(ctx: any, queryText: string = '') {
   try {
@@ -387,30 +415,106 @@ async function sendRekap(ctx: any, queryText: string = '') {
     const isKas = activeBook.toLowerCase() === DEFAULT_BOOK_NAME.toLowerCase();
     const judulBuku = isKas ? 'Kas Utama' : `Kegiatan "${activeBook}"`;
 
-    let msg = `📊 *Rekap Transaksi — ${judulBuku}*\n`;
-    msg += `🗓️ *Periode:* ${summary.periodeLabel}\n\n`;
-    msg += `🟢 *Pemasukan:* ${formatRupiah(summary.totalPemasukan)}\n`;
-    msg += `🔴 *Pengeluaran:* ${formatRupiah(summary.totalPengeluaran)}\n`;
-    msg += `━━━━━━━━━━━━━━━━━━━━━\n`;
+    let headerMsg = `📊 *Rekap Transaksi — ${judulBuku}*\n`;
+    headerMsg += `🗓️ *Periode:* ${summary.periodeLabel}\n\n`;
+    headerMsg += `🟢 *Pemasukan:* ${formatRupiah(summary.totalPemasukan)}\n`;
+    headerMsg += `🔴 *Pengeluaran:* ${formatRupiah(summary.totalPengeluaran)}\n`;
+    headerMsg += `━━━━━━━━━━━━━━━━━━━━━\n`;
     const selisihLabel = summary.saldo >= 0 ? '💰 *Sisa Uang (Surplus):*' : '🔻 *Defisit:*';
-    msg += `${selisihLabel} ${formatRupiah(summary.saldo)}\n`;
-    msg += `📝 *Jumlah Transaksi:* ${summary.count} transaksi\n`;
+    headerMsg += `${selisihLabel} ${formatRupiah(summary.saldo)}\n`;
+    headerMsg += `📝 *Jumlah Transaksi:* ${summary.count} transaksi\n`;
 
     const expKeys = Object.keys(summary.categoryExpenses);
     if (expKeys.length > 0) {
-      msg += `\n🏷️ *Rincian Pengeluaran:*`;
+      headerMsg += `\n🏷️ *Ringkasan Kategori Pengeluaran:*`;
       for (const kat of expKeys.sort((a, b) => summary.categoryExpenses[b] - summary.categoryExpenses[a])) {
-        msg += `\n • ${kat}: ${formatRupiah(summary.categoryExpenses[kat])}`;
+        headerMsg += `\n • ${escapeTelegramMarkdown(kat)}: ${formatRupiah(summary.categoryExpenses[kat])}`;
       }
     }
 
     if (summary.count === 0) {
-      msg += `\n\nℹ️ _Belum ada transaksi yang tercatat pada buku ini._`;
+      headerMsg += `\n\nℹ️ _Belum ada transaksi yang tercatat pada buku ini._`;
     }
 
-    msg += `\n\n💡 _Tips: Ketik /rekapkas untuk melihat seluruh kas & kegiatan gabungan._`;
+    // Kelompokkan semua pengeluaran berdasarkan tanggal
+    const dateBlocks: string[] = [];
+    if (summary.expenseDetails && summary.expenseDetails.length > 0) {
+      const grouped: Record<string, typeof summary.expenseDetails> = {};
+      for (const exp of summary.expenseDetails) {
+        const d = exp.date || 'Lainnya';
+        if (!grouped[d]) grouped[d] = [];
+        grouped[d].push(exp);
+      }
 
-    await ctx.reply(msg, { parse_mode: 'Markdown' });
+      // Urutkan tanggal secara kronologis (dari awal ke akhir)
+      const sortedDates = Object.keys(grouped).sort((a, b) => a.localeCompare(b));
+
+      for (const d of sortedDates) {
+        const items = grouped[d];
+        const subtotal = items.reduce((sum, item) => sum + item.nominal, 0);
+        const tglFormatted = formatIndonesianDate(d);
+
+        let block = `🗓️ *${tglFormatted}*`;
+        if (items.length > 1) {
+          block += ` _(Total: ${formatRupiah(subtotal)})_`;
+        }
+        block += `\n`;
+
+        for (const item of items) {
+          const desc = item.description && item.description !== '-' ? escapeTelegramMarkdown(item.description) : '';
+          const cat = escapeTelegramMarkdown(item.category);
+          const nominal = formatRupiah(item.nominal);
+
+          if (desc && desc.toLowerCase() !== cat.toLowerCase()) {
+            block += ` • ${desc} _(${cat})_: ${nominal}\n`;
+          } else {
+            block += ` • ${cat || 'Pengeluaran'}: ${nominal}\n`;
+          }
+        }
+        dateBlocks.push(block.trimEnd());
+      }
+    }
+
+    // Susun pesan dan pecah per chunk jika terlalu panjang (batas aman 3500 karakter)
+    const chunks: string[] = [];
+    let currentChunk = headerMsg;
+
+    if (dateBlocks.length > 0) {
+      const sectionDivider = `\n\n━━━━━━━━━━━━━━━━━━━━━\n📋 *Rincian Pengeluaran per Tanggal:*\n`;
+      if ((currentChunk + sectionDivider).length <= 3500) {
+        currentChunk += sectionDivider;
+      } else {
+        chunks.push(currentChunk.trim());
+        currentChunk = `📋 *Rincian Pengeluaran per Tanggal:*\n`;
+      }
+
+      for (const block of dateBlocks) {
+        if ((currentChunk + '\n\n' + block).length > 3500) {
+          chunks.push(currentChunk.trim());
+          currentChunk = block;
+        } else {
+          currentChunk += (currentChunk.endsWith('\n') ? '\n' : '\n\n') + block;
+        }
+      }
+    }
+
+    const tips = `\n\n💡 _Tips: Ketik \`/rekap [nama bulan]\` (contoh: \`/rekap mei\`) untuk rekap per bulan, atau \`/rekapkas\` untuk seluruh kegiatan._`;
+    if ((currentChunk + tips).length <= 3800) {
+      currentChunk += tips;
+      chunks.push(currentChunk.trim());
+    } else {
+      chunks.push(currentChunk.trim());
+      chunks.push(tips.trim());
+    }
+
+    for (const chunk of chunks) {
+      try {
+        await ctx.reply(chunk, { parse_mode: 'Markdown' });
+      } catch (err) {
+        console.warn('Gagal kirim rekap Markdown, fallback plain text:', err);
+        await ctx.reply(chunk.replace(/[*_`\\]/g, ''));
+      }
+    }
   } catch (error: any) {
     console.error('Error saat membuat rekap:', error);
     await ctx.reply(`⚠️ Gagal mengambil rekap: ${error?.message || 'Terjadi kesalahan sistem.'}`);

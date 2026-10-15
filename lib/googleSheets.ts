@@ -1,6 +1,6 @@
 import { google } from 'googleapis';
 import { getGoogleAuth } from './googleAuth';
-import { ParsedTransaction, SummaryReport, GlobalSummaryReport, BookSummary } from './types';
+import { ParsedTransaction, SummaryReport, GlobalSummaryReport, BookSummary, ExpenseDetail } from './types';
 
 export const DEFAULT_BOOK_NAME = 'Kas';
 
@@ -130,7 +130,12 @@ export async function getAllSheetBooks(forceRefresh = false): Promise<string[]> 
     // Abaikan sheet internal yang diawali underscore
     if (title.startsWith('_')) continue;
     if (title.toLowerCase() === 'sheet1') continue;
-    if (title.toLowerCase() === 'anggota' || title.toLowerCase() === 'kas_anggota') continue;
+    if (
+      title.toLowerCase() === 'anggota' ||
+      title.toLowerCase() === 'kas_anggota' ||
+      title.toLowerCase() === 'dashboard'
+    )
+      continue;
     validBooks.push(title);
   }
 
@@ -461,7 +466,7 @@ export async function getMonthSummary(
 
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId,
-    range: `'${sheetName}'!A2:E`,
+    range: `'${sheetName}'!A2:G`,
   });
 
   const rows = res.data.values || [];
@@ -470,11 +475,13 @@ export async function getMonthSummary(
   let count = 0;
   const categoryExpenses: Record<string, number> = {};
   const categoryIncome: Record<string, number> = {};
+  const expenseDetails: ExpenseDetail[] = [];
+  const incomeDetails: ExpenseDetail[] = [];
 
   const isAllTime = !yearMonthPrefix;
 
   for (const row of rows) {
-    const [tglRaw, jenis, katRaw, nominalRaw] = row;
+    const [tglRaw, jenis, katRaw, nominalRaw, keteranganRaw, noteLinkRaw] = row;
     if (!tglRaw || !nominalRaw) continue;
 
     const cleanNominal =
@@ -485,9 +492,13 @@ export async function getMonthSummary(
     const isPengeluaran = jenis?.toLowerCase().includes('pengeluaran');
     const isPemasukan = jenis?.toLowerCase().includes('pemasukan');
     const kategori = katRaw?.trim() || 'Lain-lain';
+    const keterangan = keteranganRaw ? String(keteranganRaw).trim() : '';
+    const noteLink = noteLinkRaw ? String(noteLinkRaw).trim() : '';
+
+    const cleanDate = String(tglRaw).trim().replace(/^'/, '');
 
     if (!isAllTime) {
-      const ym = normalizeDateToYearMonth(tglRaw);
+      const ym = normalizeDateToYearMonth(cleanDate);
       if (ym !== yearMonthPrefix) {
         continue;
       }
@@ -497,10 +508,24 @@ export async function getMonthSummary(
       totalPengeluaran += cleanNominal;
       categoryExpenses[kategori] = (categoryExpenses[kategori] || 0) + cleanNominal;
       count++;
+      expenseDetails.push({
+        date: cleanDate,
+        category: kategori,
+        nominal: cleanNominal,
+        description: keterangan,
+        noteLink: noteLink && noteLink !== '-' ? noteLink : undefined,
+      });
     } else if (isPemasukan) {
       totalPemasukan += cleanNominal;
       categoryIncome[kategori] = (categoryIncome[kategori] || 0) + cleanNominal;
       count++;
+      incomeDetails.push({
+        date: cleanDate,
+        category: kategori,
+        nominal: cleanNominal,
+        description: keterangan,
+        noteLink: noteLink && noteLink !== '-' ? noteLink : undefined,
+      });
     }
   }
 
@@ -517,6 +542,8 @@ export async function getMonthSummary(
     count,
     categoryExpenses,
     categoryIncome,
+    expenseDetails,
+    incomeDetails,
     bookName: sheetName,
   };
 }
