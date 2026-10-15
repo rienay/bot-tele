@@ -7,13 +7,12 @@ function getSpreadsheetId(): string {
   return id;
 }
 
-// Helper warna Google Sheets RGBA (0 to 1)
 function color(r: number, g: number, b: number) {
   return { red: r / 255, green: g / 255, blue: b / 255 };
 }
 
 async function run() {
-  console.log('🚀 Mendesain Ulang Dashboard: Hanya Charts, Pilihan Filter & KPI Card (Tanpa Teks Tabel)...');
+  console.log('🎨 Mendesain Ulang Dashboard Seperti Template Excel/BI Profesional...');
   const auth = getGoogleAuth();
   const sheets = google.sheets({ version: 'v4', auth });
   const spreadsheetId = getSpreadsheetId();
@@ -21,7 +20,7 @@ async function run() {
   // 1. Ambil meta seluruh sheet & chart
   const meta = await sheets.spreadsheets.get({
     spreadsheetId,
-    fields: 'sheets(properties,charts)',
+    fields: 'sheets(properties,charts,merges)',
   });
   const existingSheets = meta.data.sheets || [];
 
@@ -47,7 +46,7 @@ async function run() {
 
   const batchRequests: any[] = [];
 
-  // Hapus chart lama di Dashboard jika ada
+  // Hapus semua chart lama di Dashboard jika ada
   const dashSheetObj = existingSheets.find((s) => s.properties?.title?.toLowerCase() === 'dashboard');
   if (dashSheetObj?.charts && dashSheetObj.charts.length > 0) {
     for (const c of dashSheetObj.charts) {
@@ -57,7 +56,14 @@ async function run() {
     }
   }
 
-  // 2. Buat sheet data pembantu `_DashboardData` jika belum ada
+  // Unmerge semua merge lama di Dashboard
+  if (dashSheetObj?.merges && dashSheetObj.merges.length > 0) {
+    for (const m of dashSheetObj.merges) {
+      batchRequests.push({ unmergeCells: { range: m } });
+    }
+  }
+
+  // 2. Buat sheet data pembantu `_DashboardData` (hidden)
   if (dataSheetId === null) {
     const newSheetId = Math.floor(100000000 + Math.random() * 900000000);
     dataSheetId = newSheetId;
@@ -66,12 +72,11 @@ async function run() {
         properties: {
           sheetId: newSheetId,
           title: '_DashboardData',
-          hidden: true, // Sembunyikan tab data pembantu agar tab bar tetap bersih
+          hidden: true,
         },
       },
     });
   } else {
-    // Pastikan tersembunyi
     batchRequests.push({
       updateSheetProperties: {
         properties: { sheetId: dataSheetId, hidden: true },
@@ -92,7 +97,7 @@ async function run() {
     });
   }
 
-  // 3. Buat sheet Dashboard jika belum ada, atau pastikan index 0
+  // 3. Konfigurasi Dashboard Sheet (Tab 0, hideGridlines: true, 16 kolom, 48 baris)
   if (dashboardSheetId === null) {
     const newSheetId = Math.floor(100000000 + Math.random() * 900000000);
     dashboardSheetId = newSheetId;
@@ -103,11 +108,11 @@ async function run() {
           title: 'Dashboard',
           index: 0,
           gridProperties: {
-            rowCount: 45,
-            columnCount: 12,
-            hideGridlines: true, // Bersih tanpa garis kisi abu-abu seperti aplikasi asli!
+            rowCount: 48,
+            columnCount: 16,
+            hideGridlines: true,
           },
-          tabColor: color(16, 185, 129), // Emerald
+          tabColor: color(22, 101, 52), // Forest Green
         },
       },
     });
@@ -118,18 +123,18 @@ async function run() {
           sheetId: dashboardSheetId,
           index: 0,
           gridProperties: {
-            rowCount: 45,
-            columnCount: 12,
-            hideGridlines: true, // Sembunyikan gridlines agar bersih
+            rowCount: 48,
+            columnCount: 16,
+            hideGridlines: true,
           },
-          tabColor: color(16, 185, 129),
+          tabColor: color(22, 101, 52),
         },
         fields: 'index,gridProperties.hideGridlines,gridProperties.rowCount,gridProperties.columnCount,tabColor',
       },
     });
   }
 
-  // Atur urutan tab utama: Dashboard (0) -> Kas (1) -> Kas_Anggota (2) -> Anggota (3)
+  // Atur urutan tab: Dashboard -> Kas -> Kas_Anggota -> Anggota
   if (kasSheetId !== null) {
     batchRequests.push({
       updateSheetProperties: {
@@ -155,7 +160,6 @@ async function run() {
     });
   }
 
-  // Eksekusi setup sheet & hapus chart lama
   console.log(`Mengirim ${batchRequests.length} konfigurasi awal...`);
   await sheets.spreadsheets.batchUpdate({
     spreadsheetId,
@@ -165,45 +169,44 @@ async function run() {
   const dashId = dashboardSheetId!;
   const dDataId = dataSheetId!;
 
-  // 4. Bersihkan total isi sheet Dashboard (hapus seluruh teks lama)
-  console.log('🧹 Membersihkan teks/tabel lama di sheet Dashboard...');
+  // 4. Bersihkan total isi sheet Dashboard
+  console.log('🧹 Membersihkan seluruh teks lama di sheet Dashboard...');
   await sheets.spreadsheets.values.clear({
     spreadsheetId,
-    range: 'Dashboard!A1:Z100',
+    range: 'Dashboard!A1:Z60',
   });
 
-  // Hapus format lama dari baris 1 s.d 45 di Dashboard
+  // Cat seluruh kanvas dengan latar belakang Soft Slate Gray (#F1F5F9)
   await sheets.spreadsheets.batchUpdate({
     spreadsheetId,
     requestBody: {
       requests: [
         {
           repeatCell: {
-            range: { sheetId: dashId, startRowIndex: 0, endRowIndex: 45, startColumnIndex: 0, endColumnIndex: 12 },
+            range: { sheetId: dashId, startRowIndex: 0, endRowIndex: 48, startColumnIndex: 0, endColumnIndex: 16 },
             cell: {
               userEnteredFormat: {
-                backgroundColor: color(248, 250, 252), // #F8FAFC canvas background
-                borders: {},
+                backgroundColor: color(241, 245, 249), // #F1F5F9 (Soft Slate)
               },
             },
-            fields: 'userEnteredFormat(backgroundColor,borders)',
+            fields: 'userEnteredFormat.backgroundColor',
           },
         },
       ],
     },
   });
 
-  // 5. Tulis Seluruh Data Perhitungan ke Sheet Terpisah `_DashboardData`
-  console.log('📊 Menulis data sumber grafik ke sheet `_DashboardData`...');
+  // 5. Tulis Sumber Data Perhitungan ke Sheet Tersembunyi `_DashboardData`
+  console.log('📊 Menulis seluruh kalkulasi & data grafik ke `_DashboardData`...');
   await sheets.spreadsheets.values.update({
     spreadsheetId,
     range: '_DashboardData!A1:N25',
     valueInputOption: 'USER_ENTERED',
     requestBody: {
       values: [
-        // Baris 1: Header Tabel Kategori (A1:B1) dan Header Tabel Arus Kas Tahunan (D1:F1)
-        ['Kategori', 'Total Nominal', '', 'Tahun', 'Pemasukan', 'Pengeluaran'],
-        // Baris 2: Query Kategori & Data 2024
+        // Baris 1: Header Kategori (A:B), Tahunan (D:F), Bulanan 2026 (H:J)
+        ['Kategori', 'Total Nominal', '', 'Tahun', 'Pemasukan', 'Pengeluaran', '', 'Bulan', 'Pemasukan', 'Pengeluaran'],
+        // Baris 2: Query Kategori, Tahunan 2024, Bulanan Jan
         [
           '=QUERY(Kas!B2:D, "select C, sum(D) where B contains \'Pengeluaran\' and C is not null and D > 0 group by C order by sum(D) desc label C \'\', sum(D) \'\'", 0)',
           '',
@@ -211,51 +214,74 @@ async function run() {
           '2024',
           '=SUMIFS(Kas!D:D, Kas!B:B, "*Pemasukan*", Kas!A:A, "*2024*")',
           '=SUMIFS(Kas!D:D, Kas!B:B, "*Pengeluaran*", Kas!A:A, "*2024*")',
+          '',
+          'Jan',
+          '=SUMIFS(Kas!D:D, Kas!B:B, "*Pemasukan*", Kas!A:A, "*2026-01*")',
+          '=SUMIFS(Kas!D:D, Kas!B:B, "*Pengeluaran*", Kas!A:A, "*2026-01*")',
         ],
-        // Baris 3: Data 2025
+        // Baris 3: Tahunan 2025, Bulanan Feb
         [
           '', '', '',
           '2025',
           '=SUMIFS(Kas!D:D, Kas!B:B, "*Pemasukan*", Kas!A:A, "*2025*")',
           '=SUMIFS(Kas!D:D, Kas!B:B, "*Pengeluaran*", Kas!A:A, "*2025*")',
+          '',
+          'Feb',
+          '=SUMIFS(Kas!D:D, Kas!B:B, "*Pemasukan*", Kas!A:A, "*2026-02*")',
+          '=SUMIFS(Kas!D:D, Kas!B:B, "*Pengeluaran*", Kas!A:A, "*2026-02*")',
         ],
-        // Baris 4: Data 2026
+        // Baris 4: Tahunan 2026, Bulanan Mar
         [
           '', '', '',
           '2026',
           '=SUMIFS(Kas!D:D, Kas!B:B, "*Pemasukan*", Kas!A:A, "*2026*")',
           '=SUMIFS(Kas!D:D, Kas!B:B, "*Pengeluaran*", Kas!A:A, "*2026*")',
+          '',
+          'Mar',
+          '=SUMIFS(Kas!D:D, Kas!B:B, "*Pemasukan*", Kas!A:A, "*2026-03*")',
+          '=SUMIFS(Kas!D:D, Kas!B:B, "*Pengeluaran*", Kas!A:A, "*2026-03*")',
         ],
-        // Baris 5: Total
-        [
-          '', '', '',
-          'Total',
-          '=SUM(E2:E4)',
-          '=SUM(F2:F4)',
-        ],
+        // Baris 5: Apr
+        ['', '', '', '', '', '', '', 'Apr', '=SUMIFS(Kas!D:D, Kas!B:B, "*Pemasukan*", Kas!A:A, "*2026-04*")', '=SUMIFS(Kas!D:D, Kas!B:B, "*Pengeluaran*", Kas!A:A, "*2026-04*")'],
+        // Baris 6: Mei
+        ['', '', '', '', '', '', '', 'Mei', '=SUMIFS(Kas!D:D, Kas!B:B, "*Pemasukan*", Kas!A:A, "*2026-05*")', '=SUMIFS(Kas!D:D, Kas!B:B, "*Pengeluaran*", Kas!A:A, "*2026-05*")'],
+        // Baris 7: Jun
+        ['', '', '', '', '', '', '', 'Jun', '=SUMIFS(Kas!D:D, Kas!B:B, "*Pemasukan*", Kas!A:A, "*2026-06*")', '=SUMIFS(Kas!D:D, Kas!B:B, "*Pengeluaran*", Kas!A:A, "*2026-06*")'],
+        // Baris 8: Jul
+        ['', '', '', '', '', '', '', 'Jul', '=SUMIFS(Kas!D:D, Kas!B:B, "*Pemasukan*", Kas!A:A, "*2026-07*")', '=SUMIFS(Kas!D:D, Kas!B:B, "*Pengeluaran*", Kas!A:A, "*2026-07*")'],
+        // Baris 9: Agt
+        ['', '', '', '', '', '', '', 'Agt', '=SUMIFS(Kas!D:D, Kas!B:B, "*Pemasukan*", Kas!A:A, "*2026-08*")', '=SUMIFS(Kas!D:D, Kas!B:B, "*Pengeluaran*", Kas!A:A, "*2026-08*")'],
+        // Baris 10: Sep
+        ['', '', '', '', '', '', '', 'Sep', '=SUMIFS(Kas!D:D, Kas!B:B, "*Pemasukan*", Kas!A:A, "*2026-09*")', '=SUMIFS(Kas!D:D, Kas!B:B, "*Pengeluaran*", Kas!A:A, "*2026-09*")'],
+        // Baris 11: Okt
+        ['', '', '', '', '', '', '', 'Okt', '=SUMIFS(Kas!D:D, Kas!B:B, "*Pemasukan*", Kas!A:A, "*2026-10*")', '=SUMIFS(Kas!D:D, Kas!B:B, "*Pengeluaran*", Kas!A:A, "*2026-10*")'],
+        // Baris 12: Nov
+        ['', '', '', '', '', '', '', 'Nov', '=SUMIFS(Kas!D:D, Kas!B:B, "*Pemasukan*", Kas!A:A, "*2026-11*")', '=SUMIFS(Kas!D:D, Kas!B:B, "*Pengeluaran*", Kas!A:A, "*2026-11*")'],
+        // Baris 13: Des
+        ['', '', '', '', '', '', '', 'Des', '=SUMIFS(Kas!D:D, Kas!B:B, "*Pemasukan*", Kas!A:A, "*2026-12*")', '=SUMIFS(Kas!D:D, Kas!B:B, "*Pengeluaran*", Kas!A:A, "*2026-12*")'],
       ],
     },
   });
 
-  // 6. Tulis Tampilan Murni Dashboard: Hanya Header, Dropdown Pilihan, dan KPI Cards!
-  console.log('✨ Menulis Header, Pilihan Dropdown Filter, dan KPI Cards di Dashboard...');
+  // 6. Tulis Teks & Formula di Dashboard (Hanya Header, Filter, 5 Kartu KPI, dan Widget Rincian Kanan Bawah)
+  console.log('✨ Menulis Struktur UI Dashboard Eksekutif...');
   await sheets.spreadsheets.values.update({
     spreadsheetId,
-    range: 'Dashboard!A1:J11',
+    range: 'Dashboard!A1:O45',
     valueInputOption: 'USER_ENTERED',
     requestBody: {
       values: [
         // Baris 1: Kosong
         [],
-        // Baris 2: Judul Utama (B2) & Filter Tahun (G2:H2)
-        ['', '🏛️ EXECUTIVE FINANCIAL DASHBOARD', '', '', '', '', '📅 Periode Tahun:', 'Semua Tahun'],
-        // Baris 3: Subtitle (B3) & Filter Sumber (G3:H3)
-        ['', 'Realtime Sync Bot Telegram • Ringkasan Kas & Arus Keuangan', '', '', '', '', '🔍 Sumber Kas:', 'Semua Mutasi'],
+        // Baris 2: Header Banner (B2:I2 Title, L2:O2 Dropdown Periode)
+        ['', '🏛️ PERSONAL & EXECUTIVE FINANCE DASHBOARD', '', '', '', '', '', '', '', '', '', '📅 Periode:', 'Semua Tahun', '🔍 Filter:', 'Semua Kas'],
+        // Baris 3: Subtitle Banner
+        ['', 'Realtime Sync Bot Telegram • Executive Cashflow & Budget Management', '', '', '', '', '', '', '', '', '', '', 'Update: Realtime'],
         // Baris 4: Kosong (Spacer)
         [],
-        // Baris 5: Header KPI Row 1 (B5, E5, H5)
-        ['', '💰 TOTAL SALDO KAS', '', '', '🟢 TOTAL PEMASUKAN', '', '', '🔴 TOTAL PENGELUARAN'],
-        // Baris 6: Nilai KPI Row 1
+        // Baris 5: Judul 5 KPI Cards (B5, E5, H5, K5, N5)
+        ['', '💰 SALDO KAS SAAT INI', '', '', '🟢 TOTAL PEMASUKAN', '', '', '🔴 TOTAL PENGELUARAN', '', '', '👥 ANGGOTA AKTIF', '', '', '💵 IURAN KAS TERKUMPUL'],
+        // Baris 6: Nilai 5 KPI Cards
         [
           '',
           '=SUMIF(Kas!B2:B, "*Pemasukan*", Kas!D2:D) - SUMIF(Kas!B2:B, "*Pengeluaran*", Kas!D2:D)',
@@ -265,17 +291,6 @@ async function run() {
           '',
           '',
           '=SUMIF(Kas!B2:B, "*Pengeluaran*", Kas!D2:D)',
-        ],
-        // Baris 7: Spacer
-        [],
-        // Baris 8: Kosong
-        [],
-        // Baris 9: Header KPI Row 2 (B9, E9, H9)
-        ['', '📝 TOTAL TRANSAKSI KAS', '', '', '👥 ANGGOTA AKTIF', '', '', '💵 IURAN KAS TERKUMPUL'],
-        // Baris 10: Nilai KPI Row 2
-        [
-          '',
-          '=COUNTA(Kas!A2:A)',
           '',
           '',
           '=COUNTIF(Anggota!D2:D, "Aktif")',
@@ -283,77 +298,113 @@ async function run() {
           '',
           '=SUM(Kas_Anggota!D2:D)',
         ],
-        // Baris 11: Spacer (Area bawah baris 11 ini murni untuk CHARTS tanpa teks apapun!)
+        // Baris 7: Subtext KPI Card
+        ['', 'Net Cash Balance', '', '', 'Inflow Terkumpul', '', '', 'Outflow Belanja', '', '', 'Anggota Terdaftar', '', '', 'Total Kas Masuk'],
+        // Baris 8: Spacer
         [],
+        // Baris 9: Header Widget Kartu Chart Atas
+        ['', '🍩 DISTRIBUSI PENGELUARAN PER KATEGORI', '', '', '', '', '', '📊 PERBANDINGAN ARUS KAS TAHUNAN (2024 - 2026)'],
+        // Baris 10 - 27: Kosong (Area tempat Donut Chart & Annual Column Chart berada)
+        [], [], [], [], [], [], [], [], [], [], [], [], [], [], [], [], [], [],
+        // Baris 28: Spacer
+        [],
+        // Baris 29: Header Widget Kartu Bawah
+        ['', '📈 TREN MUTASI KAS BULANAN (2026)', '', '', '', '', '', '🏆 TOP 5 PENGELUARAN TERBESAR & STATISTIK KAS'],
+        // Baris 30: Subheader Top 5 di Widget Kanan Bawah
+        ['', '', '', '', '', '', '', '', 'Kategori', 'Total Belanja', 'Proporsi', '', 'Indikator Kas', 'Nilai'],
+        // Baris 31: Data Rank 1
+        ['', '', '', '', '', '', '', '', '=_DashboardData!A2', '=_DashboardData!B2', '=_DashboardData!B2 / $H$6', '', 'Total Mutasi:', '=COUNTA(Kas!A2:A) & " Transaksi"'],
+        // Baris 32: Data Rank 2
+        ['', '', '', '', '', '', '', '', '=_DashboardData!A3', '=_DashboardData!B3', '=_DashboardData!B3 / $H$6', '', 'Rata-rata Keluar:', '=AVERAGEIF(Kas!B2:B, "*Pengeluaran*", Kas!D2:D)'],
+        // Baris 33: Data Rank 3
+        ['', '', '', '', '', '', '', '', '=_DashboardData!A4', '=_DashboardData!B4', '=_DashboardData!B4 / $H$6', '', 'Kepatuhan Iuran:', '=COUNTIF(Kas_Anggota!F2:F, "Lunas") / COUNTA(Kas_Anggota!F2:F)'],
+        // Baris 34: Data Rank 4
+        ['', '', '', '', '', '', '', '', '=_DashboardData!A5', '=_DashboardData!B5', '=_DashboardData!B5 / $H$6', '', 'Status Kas:', 'SEHAT (Surplus)'],
+        // Baris 35: Data Rank 5
+        ['', '', '', '', '', '', '', '', '=_DashboardData!A6', '=_DashboardData!B6', '=_DashboardData!B6 / $H$6', '', 'Buku Aktif:', '=Kas!A1 & " (Kas Utama)"'],
       ],
     },
   });
 
-  // Unmerge merge lama jika ada agar tidak bentrok
-  const curMeta = await sheets.spreadsheets.get({ spreadsheetId });
-  const curDash = curMeta.data.sheets?.find((s) => s.properties?.title?.toLowerCase() === 'dashboard');
-  if (curDash?.merges && curDash.merges.length > 0) {
-    const unmerges = curDash.merges.map((range) => ({ unmergeCells: { range } }));
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId,
-      requestBody: { requests: unmerges },
-    });
-  }
+  // 7. Styling Visual: Bentuk Kartu UI Rounded/White Box, Border Elegan, dan Typography
+  console.log('🎨 Menerapkan Styling Kartu UI & Memasang 3 Chart...');
 
-  // 7. Styling Visual Dashboard & Tambahkan Charts Interaktif
-  console.log('🎨 Menerapkan Styling UI Dashboard & Memasang Chart...');
-
-  const borderSolid = {
+  const borderCard = {
     style: 'SOLID',
     width: 1,
-    color: color(226, 232, 240), // Slate 200 border
+    color: color(226, 232, 240), // Slate 200
+  };
+  const borderCardDark = {
+    style: 'SOLID',
+    width: 1,
+    color: color(203, 213, 225), // Slate 300
   };
 
   const uiRequests: any[] = [
-    // Dimensi Kolom Dashboard
-    { updateDimensionProperties: { range: { sheetId: dashId, dimension: 'COLUMNS', startIndex: 0, endIndex: 1 }, properties: { pixelSize: 25 }, fields: 'pixelSize' } },
-    { updateDimensionProperties: { range: { sheetId: dashId, dimension: 'COLUMNS', startIndex: 1, endIndex: 2 }, properties: { pixelSize: 180 }, fields: 'pixelSize' } }, // B
-    { updateDimensionProperties: { range: { sheetId: dashId, dimension: 'COLUMNS', startIndex: 2, endIndex: 3 }, properties: { pixelSize: 170 }, fields: 'pixelSize' } }, // C
-    { updateDimensionProperties: { range: { sheetId: dashId, dimension: 'COLUMNS', startIndex: 3, endIndex: 4 }, properties: { pixelSize: 30 }, fields: 'pixelSize' } },  // D spacer
-    { updateDimensionProperties: { range: { sheetId: dashId, dimension: 'COLUMNS', startIndex: 4, endIndex: 5 }, properties: { pixelSize: 175 }, fields: 'pixelSize' } }, // E
-    { updateDimensionProperties: { range: { sheetId: dashId, dimension: 'COLUMNS', startIndex: 5, endIndex: 6 }, properties: { pixelSize: 175 }, fields: 'pixelSize' } }, // F
-    { updateDimensionProperties: { range: { sheetId: dashId, dimension: 'COLUMNS', startIndex: 6, endIndex: 7 }, properties: { pixelSize: 30 }, fields: 'pixelSize' } },  // G spacer
-    { updateDimensionProperties: { range: { sheetId: dashId, dimension: 'COLUMNS', startIndex: 7, endIndex: 8 }, properties: { pixelSize: 180 }, fields: 'pixelSize' } }, // H
-    { updateDimensionProperties: { range: { sheetId: dashId, dimension: 'COLUMNS', startIndex: 8, endIndex: 9 }, properties: { pixelSize: 180 }, fields: 'pixelSize' } }, // I
-    { updateDimensionProperties: { range: { sheetId: dashId, dimension: 'COLUMNS', startIndex: 9, endIndex: 10 }, properties: { pixelSize: 25 }, fields: 'pixelSize' } }, // J
+    // Dimensi Kolom (Total 16 Kolom)
+    { updateDimensionProperties: { range: { sheetId: dashId, dimension: 'COLUMNS', startIndex: 0, endIndex: 1 }, properties: { pixelSize: 25 }, fields: 'pixelSize' } }, // A (margin)
+    { updateDimensionProperties: { range: { sheetId: dashId, dimension: 'COLUMNS', startIndex: 1, endIndex: 2 }, properties: { pixelSize: 115 }, fields: 'pixelSize' } }, // B
+    { updateDimensionProperties: { range: { sheetId: dashId, dimension: 'COLUMNS', startIndex: 2, endIndex: 3 }, properties: { pixelSize: 115 }, fields: 'pixelSize' } }, // C (Card 1: 230px)
+    { updateDimensionProperties: { range: { sheetId: dashId, dimension: 'COLUMNS', startIndex: 3, endIndex: 4 }, properties: { pixelSize: 20 }, fields: 'pixelSize' } },  // D spacer
+    { updateDimensionProperties: { range: { sheetId: dashId, dimension: 'COLUMNS', startIndex: 4, endIndex: 5 }, properties: { pixelSize: 115 }, fields: 'pixelSize' } }, // E
+    { updateDimensionProperties: { range: { sheetId: dashId, dimension: 'COLUMNS', startIndex: 5, endIndex: 6 }, properties: { pixelSize: 115 }, fields: 'pixelSize' } }, // F (Card 2: 230px)
+    { updateDimensionProperties: { range: { sheetId: dashId, dimension: 'COLUMNS', startIndex: 6, endIndex: 7 }, properties: { pixelSize: 20 }, fields: 'pixelSize' } },  // G spacer
+    { updateDimensionProperties: { range: { sheetId: dashId, dimension: 'COLUMNS', startIndex: 7, endIndex: 8 }, properties: { pixelSize: 115 }, fields: 'pixelSize' } }, // H
+    { updateDimensionProperties: { range: { sheetId: dashId, dimension: 'COLUMNS', startIndex: 8, endIndex: 9 }, properties: { pixelSize: 115 }, fields: 'pixelSize' } }, // I (Card 3: 230px)
+    { updateDimensionProperties: { range: { sheetId: dashId, dimension: 'COLUMNS', startIndex: 9, endIndex: 10 }, properties: { pixelSize: 20 }, fields: 'pixelSize' } }, // J spacer
+    { updateDimensionProperties: { range: { sheetId: dashId, dimension: 'COLUMNS', startIndex: 10, endIndex: 11 }, properties: { pixelSize: 115 }, fields: 'pixelSize' } }, // K
+    { updateDimensionProperties: { range: { sheetId: dashId, dimension: 'COLUMNS', startIndex: 11, endIndex: 12 }, properties: { pixelSize: 115 }, fields: 'pixelSize' } }, // L (Card 4: 230px)
+    { updateDimensionProperties: { range: { sheetId: dashId, dimension: 'COLUMNS', startIndex: 12, endIndex: 13 }, properties: { pixelSize: 20 }, fields: 'pixelSize' } }, // M spacer
+    { updateDimensionProperties: { range: { sheetId: dashId, dimension: 'COLUMNS', startIndex: 13, endIndex: 14 }, properties: { pixelSize: 115 }, fields: 'pixelSize' } }, // N
+    { updateDimensionProperties: { range: { sheetId: dashId, dimension: 'COLUMNS', startIndex: 14, endIndex: 15 }, properties: { pixelSize: 115 }, fields: 'pixelSize' } }, // O (Card 5: 230px)
+    { updateDimensionProperties: { range: { sheetId: dashId, dimension: 'COLUMNS', startIndex: 15, endIndex: 16 }, properties: { pixelSize: 25 }, fields: 'pixelSize' } }, // P (margin)
 
-    // Dimensi Baris
-    { updateDimensionProperties: { range: { sheetId: dashId, dimension: 'ROWS', startIndex: 1, endIndex: 2 }, properties: { pixelSize: 40 }, fields: 'pixelSize' } }, // Row 2 Header
+    // Tinggi Baris
+    { updateDimensionProperties: { range: { sheetId: dashId, dimension: 'ROWS', startIndex: 1, endIndex: 2 }, properties: { pixelSize: 42 }, fields: 'pixelSize' } }, // Row 2 Header
     { updateDimensionProperties: { range: { sheetId: dashId, dimension: 'ROWS', startIndex: 2, endIndex: 3 }, properties: { pixelSize: 26 }, fields: 'pixelSize' } }, // Row 3 Subtitle
-    { updateDimensionProperties: { range: { sheetId: dashId, dimension: 'ROWS', startIndex: 4, endIndex: 5 }, properties: { pixelSize: 28 }, fields: 'pixelSize' } }, // Row 5 Card Title
-    { updateDimensionProperties: { range: { sheetId: dashId, dimension: 'ROWS', startIndex: 5, endIndex: 7 }, properties: { pixelSize: 36 }, fields: 'pixelSize' } }, // Row 6-7 Card Values
-    { updateDimensionProperties: { range: { sheetId: dashId, dimension: 'ROWS', startIndex: 8, endIndex: 9 }, properties: { pixelSize: 28 }, fields: 'pixelSize' } }, // Row 9 Card Title
-    { updateDimensionProperties: { range: { sheetId: dashId, dimension: 'ROWS', startIndex: 9, endIndex: 11 }, properties: { pixelSize: 36 }, fields: 'pixelSize' } }, // Row 10-11 Card Values
+    { updateDimensionProperties: { range: { sheetId: dashId, dimension: 'ROWS', startIndex: 4, endIndex: 5 }, properties: { pixelSize: 26 }, fields: 'pixelSize' } }, // Row 5 Card Title
+    { updateDimensionProperties: { range: { sheetId: dashId, dimension: 'ROWS', startIndex: 5, endIndex: 6 }, properties: { pixelSize: 38 }, fields: 'pixelSize' } }, // Row 6 Card Value
+    { updateDimensionProperties: { range: { sheetId: dashId, dimension: 'ROWS', startIndex: 6, endIndex: 7 }, properties: { pixelSize: 22 }, fields: 'pixelSize' } }, // Row 7 Card Subtext
+    { updateDimensionProperties: { range: { sheetId: dashId, dimension: 'ROWS', startIndex: 8, endIndex: 9 }, properties: { pixelSize: 34 }, fields: 'pixelSize' } }, // Row 9 Widget Header
+    { updateDimensionProperties: { range: { sheetId: dashId, dimension: 'ROWS', startIndex: 28, endIndex: 29 }, properties: { pixelSize: 34 }, fields: 'pixelSize' } }, // Row 29 Bottom Header
 
     // Merges
-    { mergeCells: { range: { sheetId: dashId, startRowIndex: 1, endRowIndex: 2, startColumnIndex: 1, endColumnIndex: 6 }, mergeType: 'MERGE_ALL' } }, // B2:F2
-    { mergeCells: { range: { sheetId: dashId, startRowIndex: 2, endRowIndex: 3, startColumnIndex: 1, endColumnIndex: 6 }, mergeType: 'MERGE_ALL' } }, // B3:F3
+    { mergeCells: { range: { sheetId: dashId, startRowIndex: 1, endRowIndex: 2, startColumnIndex: 1, endColumnIndex: 11 }, mergeType: 'MERGE_ALL' } }, // B2:K2
+    { mergeCells: { range: { sheetId: dashId, startRowIndex: 2, endRowIndex: 3, startColumnIndex: 1, endColumnIndex: 11 }, mergeType: 'MERGE_ALL' } }, // B3:K3
 
-    // KPI Row 1
+    // 5 KPI Cards (B5:C7, E5:F7, H5:I7, K5:L7, N5:O7)
     { mergeCells: { range: { sheetId: dashId, startRowIndex: 4, endRowIndex: 5, startColumnIndex: 1, endColumnIndex: 3 }, mergeType: 'MERGE_ALL' } },
-    { mergeCells: { range: { sheetId: dashId, startRowIndex: 5, endRowIndex: 7, startColumnIndex: 1, endColumnIndex: 3 }, mergeType: 'MERGE_ALL' } },
+    { mergeCells: { range: { sheetId: dashId, startRowIndex: 5, endRowIndex: 6, startColumnIndex: 1, endColumnIndex: 3 }, mergeType: 'MERGE_ALL' } },
+    { mergeCells: { range: { sheetId: dashId, startRowIndex: 6, endRowIndex: 7, startColumnIndex: 1, endColumnIndex: 3 }, mergeType: 'MERGE_ALL' } },
+
     { mergeCells: { range: { sheetId: dashId, startRowIndex: 4, endRowIndex: 5, startColumnIndex: 4, endColumnIndex: 6 }, mergeType: 'MERGE_ALL' } },
-    { mergeCells: { range: { sheetId: dashId, startRowIndex: 5, endRowIndex: 7, startColumnIndex: 4, endColumnIndex: 6 }, mergeType: 'MERGE_ALL' } },
+    { mergeCells: { range: { sheetId: dashId, startRowIndex: 5, endRowIndex: 6, startColumnIndex: 4, endColumnIndex: 6 }, mergeType: 'MERGE_ALL' } },
+    { mergeCells: { range: { sheetId: dashId, startRowIndex: 6, endRowIndex: 7, startColumnIndex: 4, endColumnIndex: 6 }, mergeType: 'MERGE_ALL' } },
+
     { mergeCells: { range: { sheetId: dashId, startRowIndex: 4, endRowIndex: 5, startColumnIndex: 7, endColumnIndex: 9 }, mergeType: 'MERGE_ALL' } },
-    { mergeCells: { range: { sheetId: dashId, startRowIndex: 5, endRowIndex: 7, startColumnIndex: 7, endColumnIndex: 9 }, mergeType: 'MERGE_ALL' } },
+    { mergeCells: { range: { sheetId: dashId, startRowIndex: 5, endRowIndex: 6, startColumnIndex: 7, endColumnIndex: 9 }, mergeType: 'MERGE_ALL' } },
+    { mergeCells: { range: { sheetId: dashId, startRowIndex: 6, endRowIndex: 7, startColumnIndex: 7, endColumnIndex: 9 }, mergeType: 'MERGE_ALL' } },
 
-    // KPI Row 2
-    { mergeCells: { range: { sheetId: dashId, startRowIndex: 8, endRowIndex: 9, startColumnIndex: 1, endColumnIndex: 3 }, mergeType: 'MERGE_ALL' } },
-    { mergeCells: { range: { sheetId: dashId, startRowIndex: 9, endRowIndex: 11, startColumnIndex: 1, endColumnIndex: 3 }, mergeType: 'MERGE_ALL' } },
-    { mergeCells: { range: { sheetId: dashId, startRowIndex: 8, endRowIndex: 9, startColumnIndex: 4, endColumnIndex: 6 }, mergeType: 'MERGE_ALL' } },
-    { mergeCells: { range: { sheetId: dashId, startRowIndex: 9, endRowIndex: 11, startColumnIndex: 4, endColumnIndex: 6 }, mergeType: 'MERGE_ALL' } },
-    { mergeCells: { range: { sheetId: dashId, startRowIndex: 8, endRowIndex: 9, startColumnIndex: 7, endColumnIndex: 9 }, mergeType: 'MERGE_ALL' } },
-    { mergeCells: { range: { sheetId: dashId, startRowIndex: 9, endRowIndex: 11, startColumnIndex: 7, endColumnIndex: 9 }, mergeType: 'MERGE_ALL' } },
+    { mergeCells: { range: { sheetId: dashId, startRowIndex: 4, endRowIndex: 5, startColumnIndex: 10, endColumnIndex: 12 }, mergeType: 'MERGE_ALL' } },
+    { mergeCells: { range: { sheetId: dashId, startRowIndex: 5, endRowIndex: 6, startColumnIndex: 10, endColumnIndex: 12 }, mergeType: 'MERGE_ALL' } },
+    { mergeCells: { range: { sheetId: dashId, startRowIndex: 6, endRowIndex: 7, startColumnIndex: 10, endColumnIndex: 12 }, mergeType: 'MERGE_ALL' } },
 
-    // Format B2 Title
+    { mergeCells: { range: { sheetId: dashId, startRowIndex: 4, endRowIndex: 5, startColumnIndex: 13, endColumnIndex: 15 }, mergeType: 'MERGE_ALL' } },
+    { mergeCells: { range: { sheetId: dashId, startRowIndex: 5, endRowIndex: 6, startColumnIndex: 13, endColumnIndex: 15 }, mergeType: 'MERGE_ALL' } },
+    { mergeCells: { range: { sheetId: dashId, startRowIndex: 6, endRowIndex: 7, startColumnIndex: 13, endColumnIndex: 15 }, mergeType: 'MERGE_ALL' } },
+
+    // Widget Containers Merges
+    // Widget 1 Header (B9:G9) & Widget 2 Header (H9:O9)
+    { mergeCells: { range: { sheetId: dashId, startRowIndex: 8, endRowIndex: 9, startColumnIndex: 1, endColumnIndex: 7 }, mergeType: 'MERGE_ALL' } },
+    { mergeCells: { range: { sheetId: dashId, startRowIndex: 8, endRowIndex: 9, startColumnIndex: 7, endColumnIndex: 15 }, mergeType: 'MERGE_ALL' } },
+    // Widget 3 Header (B29:G29) & Widget 4 Header (H29:O29)
+    { mergeCells: { range: { sheetId: dashId, startRowIndex: 28, endRowIndex: 29, startColumnIndex: 1, endColumnIndex: 7 }, mergeType: 'MERGE_ALL' } },
+    { mergeCells: { range: { sheetId: dashId, startRowIndex: 28, endRowIndex: 29, startColumnIndex: 7, endColumnIndex: 15 }, mergeType: 'MERGE_ALL' } },
+
+    // Styling Banner Title (B2)
     {
       repeatCell: {
-        range: { sheetId: dashId, startRowIndex: 1, endRowIndex: 2, startColumnIndex: 1, endColumnIndex: 6 },
+        range: { sheetId: dashId, startRowIndex: 1, endRowIndex: 2, startColumnIndex: 1, endColumnIndex: 11 },
         cell: {
           userEnteredFormat: {
             textFormat: { foregroundColor: color(15, 23, 42), bold: true, fontSize: 16 },
@@ -363,13 +414,12 @@ async function run() {
         fields: 'userEnteredFormat(textFormat,verticalAlignment)',
       },
     },
-    // Format B3 Subtitle
     {
       repeatCell: {
-        range: { sheetId: dashId, startRowIndex: 2, endRowIndex: 3, startColumnIndex: 1, endColumnIndex: 6 },
+        range: { sheetId: dashId, startRowIndex: 2, endRowIndex: 3, startColumnIndex: 1, endColumnIndex: 11 },
         cell: {
           userEnteredFormat: {
-            textFormat: { foregroundColor: color(100, 116, 139), bold: false, fontSize: 9 },
+            textFormat: { foregroundColor: color(100, 116, 139), fontSize: 9 },
             verticalAlignment: 'MIDDLE',
           },
         },
@@ -377,10 +427,10 @@ async function run() {
       },
     },
 
-    // Format Dropdown Label G2 & G3
+    // Dropdown Labels & Buttons (L2:O3)
     {
       repeatCell: {
-        range: { sheetId: dashId, startRowIndex: 1, endRowIndex: 3, startColumnIndex: 6, endColumnIndex: 7 },
+        range: { sheetId: dashId, startRowIndex: 1, endRowIndex: 2, startColumnIndex: 11, endColumnIndex: 12 },
         cell: {
           userEnteredFormat: {
             textFormat: { foregroundColor: color(71, 85, 105), bold: true, fontSize: 9 },
@@ -391,267 +441,487 @@ async function run() {
         fields: 'userEnteredFormat(textFormat,horizontalAlignment,verticalAlignment)',
       },
     },
-    // Format Dropdown Box H2 & H3 (White button, border, bold)
     {
       repeatCell: {
-        range: { sheetId: dashId, startRowIndex: 1, endRowIndex: 3, startColumnIndex: 7, endColumnIndex: 8 },
+        range: { sheetId: dashId, startRowIndex: 1, endRowIndex: 2, startColumnIndex: 12, endColumnIndex: 13 },
         cell: {
           userEnteredFormat: {
             backgroundColor: color(255, 255, 255),
-            textFormat: { foregroundColor: color(15, 23, 42), bold: true, fontSize: 10 },
+            textFormat: { foregroundColor: color(15, 23, 42), bold: true, fontSize: 9 },
             horizontalAlignment: 'CENTER',
             verticalAlignment: 'MIDDLE',
-            borders: { top: borderSolid, bottom: borderSolid, left: borderSolid, right: borderSolid },
+            borders: { top: borderCard, bottom: borderCard, left: borderCard, right: borderCard },
           },
         },
         fields: 'userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,borders)',
       },
     },
-
-    // Dropdown Data Validation H2 (Tahun)
-    {
-      setDataValidation: {
-        range: { sheetId: dashId, startRowIndex: 1, endRowIndex: 2, startColumnIndex: 7, endColumnIndex: 8 },
-        rule: {
-          condition: {
-            type: 'ONE_OF_LIST',
-            values: [
-              { userEnteredValue: 'Semua Tahun' },
-              { userEnteredValue: '2026' },
-              { userEnteredValue: '2025' },
-              { userEnteredValue: '2024' },
-            ],
-          },
-          showCustomUi: true,
-          strict: true,
-        },
-      },
-    },
-    // Dropdown Data Validation H3 (Sumber Kas)
-    {
-      setDataValidation: {
-        range: { sheetId: dashId, startRowIndex: 2, endRowIndex: 3, startColumnIndex: 7, endColumnIndex: 8 },
-        rule: {
-          condition: {
-            type: 'ONE_OF_LIST',
-            values: [
-              { userEnteredValue: 'Semua Mutasi' },
-              { userEnteredValue: 'Kas Utama' },
-              { userEnteredValue: 'Iuran Kas Anggota' },
-            ],
-          },
-          showCustomUi: true,
-          strict: true,
-        },
-      },
-    },
-
-    // Format Card 1 (Saldo Kas): B5:C7
     {
       repeatCell: {
-        range: { sheetId: dashId, startRowIndex: 4, endRowIndex: 5, startColumnIndex: 1, endColumnIndex: 3 },
+        range: { sheetId: dashId, startRowIndex: 1, endRowIndex: 2, startColumnIndex: 13, endColumnIndex: 14 },
         cell: {
           userEnteredFormat: {
-            backgroundColor: color(15, 118, 110), // Teal 700
-            textFormat: { foregroundColor: color(255, 255, 255), bold: true, fontSize: 10 },
-            horizontalAlignment: 'CENTER',
+            textFormat: { foregroundColor: color(71, 85, 105), bold: true, fontSize: 9 },
+            horizontalAlignment: 'RIGHT',
             verticalAlignment: 'MIDDLE',
           },
         },
-        fields: 'userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)',
+        fields: 'userEnteredFormat(textFormat,horizontalAlignment,verticalAlignment)',
       },
     },
     {
       repeatCell: {
-        range: { sheetId: dashId, startRowIndex: 5, endRowIndex: 7, startColumnIndex: 1, endColumnIndex: 3 },
-        cell: {
-          userEnteredFormat: {
-            backgroundColor: color(240, 253, 244), // #F0FDF4
-            textFormat: { foregroundColor: color(6, 95, 70), bold: true, fontSize: 18 },
-            numberFormat: { type: 'CURRENCY', pattern: '"Rp"#,##0' },
-            horizontalAlignment: 'CENTER',
-            verticalAlignment: 'MIDDLE',
-            borders: { bottom: borderSolid, left: borderSolid, right: borderSolid },
-          },
-        },
-        fields: 'userEnteredFormat(backgroundColor,textFormat,numberFormat,horizontalAlignment,verticalAlignment,borders)',
-      },
-    },
-
-    // Format Card 2 (Pemasukan): E5:F7
-    {
-      repeatCell: {
-        range: { sheetId: dashId, startRowIndex: 4, endRowIndex: 5, startColumnIndex: 4, endColumnIndex: 6 },
-        cell: {
-          userEnteredFormat: {
-            backgroundColor: color(21, 128, 61), // Green 700
-            textFormat: { foregroundColor: color(255, 255, 255), bold: true, fontSize: 10 },
-            horizontalAlignment: 'CENTER',
-            verticalAlignment: 'MIDDLE',
-          },
-        },
-        fields: 'userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)',
-      },
-    },
-    {
-      repeatCell: {
-        range: { sheetId: dashId, startRowIndex: 5, endRowIndex: 7, startColumnIndex: 4, endColumnIndex: 6 },
-        cell: {
-          userEnteredFormat: {
-            backgroundColor: color(220, 252, 231), // #DCFCE7
-            textFormat: { foregroundColor: color(22, 101, 52), bold: true, fontSize: 16 },
-            numberFormat: { type: 'CURRENCY', pattern: '"Rp"#,##0' },
-            horizontalAlignment: 'CENTER',
-            verticalAlignment: 'MIDDLE',
-            borders: { bottom: borderSolid, left: borderSolid, right: borderSolid },
-          },
-        },
-        fields: 'userEnteredFormat(backgroundColor,textFormat,numberFormat,horizontalAlignment,verticalAlignment,borders)',
-      },
-    },
-
-    // Format Card 3 (Pengeluaran): H5:I7
-    {
-      repeatCell: {
-        range: { sheetId: dashId, startRowIndex: 4, endRowIndex: 5, startColumnIndex: 7, endColumnIndex: 9 },
-        cell: {
-          userEnteredFormat: {
-            backgroundColor: color(185, 28, 28), // Red 700
-            textFormat: { foregroundColor: color(255, 255, 255), bold: true, fontSize: 10 },
-            horizontalAlignment: 'CENTER',
-            verticalAlignment: 'MIDDLE',
-          },
-        },
-        fields: 'userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)',
-      },
-    },
-    {
-      repeatCell: {
-        range: { sheetId: dashId, startRowIndex: 5, endRowIndex: 7, startColumnIndex: 7, endColumnIndex: 9 },
-        cell: {
-          userEnteredFormat: {
-            backgroundColor: color(254, 226, 226), // #FEE2E2
-            textFormat: { foregroundColor: color(153, 27, 27), bold: true, fontSize: 16 },
-            numberFormat: { type: 'CURRENCY', pattern: '"Rp"#,##0' },
-            horizontalAlignment: 'CENTER',
-            verticalAlignment: 'MIDDLE',
-            borders: { bottom: borderSolid, left: borderSolid, right: borderSolid },
-          },
-        },
-        fields: 'userEnteredFormat(backgroundColor,textFormat,numberFormat,horizontalAlignment,verticalAlignment,borders)',
-      },
-    },
-
-    // Format Card 4 (Total Transaksi): B9:C11
-    {
-      repeatCell: {
-        range: { sheetId: dashId, startRowIndex: 8, endRowIndex: 9, startColumnIndex: 1, endColumnIndex: 3 },
-        cell: {
-          userEnteredFormat: {
-            backgroundColor: color(51, 65, 85),
-            textFormat: { foregroundColor: color(255, 255, 255), bold: true, fontSize: 10 },
-            horizontalAlignment: 'CENTER',
-            verticalAlignment: 'MIDDLE',
-          },
-        },
-        fields: 'userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)',
-      },
-    },
-    {
-      repeatCell: {
-        range: { sheetId: dashId, startRowIndex: 9, endRowIndex: 11, startColumnIndex: 1, endColumnIndex: 3 },
+        range: { sheetId: dashId, startRowIndex: 1, endRowIndex: 2, startColumnIndex: 14, endColumnIndex: 15 },
         cell: {
           userEnteredFormat: {
             backgroundColor: color(255, 255, 255),
-            textFormat: { foregroundColor: color(30, 41, 59), bold: true, fontSize: 16 },
-            numberFormat: { type: 'NUMBER', pattern: '#,##0" Transaksi"' },
+            textFormat: { foregroundColor: color(15, 23, 42), bold: true, fontSize: 9 },
             horizontalAlignment: 'CENTER',
             verticalAlignment: 'MIDDLE',
-            borders: { bottom: borderSolid, left: borderSolid, right: borderSolid },
+            borders: { top: borderCard, bottom: borderCard, left: borderCard, right: borderCard },
           },
         },
-        fields: 'userEnteredFormat(backgroundColor,textFormat,numberFormat,horizontalAlignment,verticalAlignment,borders)',
+        fields: 'userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,borders)',
+      },
+    },
+    // Data Validation Dropdown Tahun & Sumber
+    {
+      setDataValidation: {
+        range: { sheetId: dashId, startRowIndex: 1, endRowIndex: 2, startColumnIndex: 12, endColumnIndex: 13 },
+        rule: {
+          condition: {
+            type: 'ONE_OF_LIST',
+            values: [{ userEnteredValue: 'Semua Tahun' }, { userEnteredValue: '2026' }, { userEnteredValue: '2025' }, { userEnteredValue: '2024' }],
+          },
+          showCustomUi: true,
+          strict: true,
+        },
+      },
+    },
+    {
+      setDataValidation: {
+        range: { sheetId: dashId, startRowIndex: 1, endRowIndex: 2, startColumnIndex: 14, endColumnIndex: 15 },
+        rule: {
+          condition: {
+            type: 'ONE_OF_LIST',
+            values: [{ userEnteredValue: 'Semua Kas' }, { userEnteredValue: 'Kas Utama' }, { userEnteredValue: 'Kas Anggota' }],
+          },
+          showCustomUi: true,
+          strict: true,
+        },
       },
     },
 
-    // Format Card 5 (Anggota Aktif): E9:F11
+    // -------------------------------------------------------------
+    // Styling 5 Kartu KPI (White Box, Shadow Border, Rounded Look)
+    // -------------------------------------------------------------
+    // Card 1: Saldo Kas (B5:C7)
     {
       repeatCell: {
-        range: { sheetId: dashId, startRowIndex: 8, endRowIndex: 9, startColumnIndex: 4, endColumnIndex: 6 },
+        range: { sheetId: dashId, startRowIndex: 4, endRowIndex: 7, startColumnIndex: 1, endColumnIndex: 3 },
         cell: {
           userEnteredFormat: {
-            backgroundColor: color(29, 78, 216),
-            textFormat: { foregroundColor: color(255, 255, 255), bold: true, fontSize: 10 },
+            backgroundColor: color(255, 255, 255),
+            borders: { top: borderCard, bottom: borderCard, left: borderCard, right: borderCard },
             horizontalAlignment: 'CENTER',
             verticalAlignment: 'MIDDLE',
           },
         },
-        fields: 'userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)',
+        fields: 'userEnteredFormat(backgroundColor,borders,horizontalAlignment,verticalAlignment)',
       },
     },
     {
       repeatCell: {
-        range: { sheetId: dashId, startRowIndex: 9, endRowIndex: 11, startColumnIndex: 4, endColumnIndex: 6 },
-        cell: {
-          userEnteredFormat: {
-            backgroundColor: color(239, 246, 255),
-            textFormat: { foregroundColor: color(30, 64, 175), bold: true, fontSize: 16 },
-            numberFormat: { type: 'NUMBER', pattern: '#,##0" Orang"' },
-            horizontalAlignment: 'CENTER',
-            verticalAlignment: 'MIDDLE',
-            borders: { bottom: borderSolid, left: borderSolid, right: borderSolid },
-          },
-        },
-        fields: 'userEnteredFormat(backgroundColor,textFormat,numberFormat,horizontalAlignment,verticalAlignment,borders)',
-      },
-    },
-
-    // Format Card 6 (Iuran Kas): H9:I11
-    {
-      repeatCell: {
-        range: { sheetId: dashId, startRowIndex: 8, endRowIndex: 9, startColumnIndex: 7, endColumnIndex: 9 },
-        cell: {
-          userEnteredFormat: {
-            backgroundColor: color(180, 83, 9),
-            textFormat: { foregroundColor: color(255, 255, 255), bold: true, fontSize: 10 },
-            horizontalAlignment: 'CENTER',
-            verticalAlignment: 'MIDDLE',
-          },
-        },
-        fields: 'userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)',
+        range: { sheetId: dashId, startRowIndex: 4, endRowIndex: 5, startColumnIndex: 1, endColumnIndex: 3 },
+        cell: { userEnteredFormat: { textFormat: { foregroundColor: color(100, 116, 139), bold: true, fontSize: 9 } } },
+        fields: 'userEnteredFormat.textFormat',
       },
     },
     {
       repeatCell: {
-        range: { sheetId: dashId, startRowIndex: 9, endRowIndex: 11, startColumnIndex: 7, endColumnIndex: 9 },
+        range: { sheetId: dashId, startRowIndex: 5, endRowIndex: 6, startColumnIndex: 1, endColumnIndex: 3 },
         cell: {
           userEnteredFormat: {
-            backgroundColor: color(255, 251, 235),
-            textFormat: { foregroundColor: color(146, 64, 14), bold: true, fontSize: 16 },
+            textFormat: { foregroundColor: color(15, 118, 110), bold: true, fontSize: 16 },
             numberFormat: { type: 'CURRENCY', pattern: '"Rp"#,##0' },
-            horizontalAlignment: 'CENTER',
-            verticalAlignment: 'MIDDLE',
-            borders: { bottom: borderSolid, left: borderSolid, right: borderSolid },
           },
         },
-        fields: 'userEnteredFormat(backgroundColor,textFormat,numberFormat,horizontalAlignment,verticalAlignment,borders)',
+        fields: 'userEnteredFormat(textFormat,numberFormat)',
+      },
+    },
+    {
+      repeatCell: {
+        range: { sheetId: dashId, startRowIndex: 6, endRowIndex: 7, startColumnIndex: 1, endColumnIndex: 3 },
+        cell: { userEnteredFormat: { textFormat: { foregroundColor: color(148, 163, 184), fontSize: 8 } } },
+        fields: 'userEnteredFormat.textFormat',
       },
     },
 
-    // ------------------------------------------------------------------------
-    // 8. Tambahkan 2 Chart Besar & Megah yang Mengisi Area Bawah (Tanpa Teks!)
-    // Sumber Data diambil dari sheet `_DashboardData`
-    // ------------------------------------------------------------------------
+    // Card 2: Pemasukan (E5:F7)
+    {
+      repeatCell: {
+        range: { sheetId: dashId, startRowIndex: 4, endRowIndex: 7, startColumnIndex: 4, endColumnIndex: 6 },
+        cell: {
+          userEnteredFormat: {
+            backgroundColor: color(255, 255, 255),
+            borders: { top: borderCard, bottom: borderCard, left: borderCard, right: borderCard },
+            horizontalAlignment: 'CENTER',
+            verticalAlignment: 'MIDDLE',
+          },
+        },
+        fields: 'userEnteredFormat(backgroundColor,borders,horizontalAlignment,verticalAlignment)',
+      },
+    },
+    {
+      repeatCell: {
+        range: { sheetId: dashId, startRowIndex: 4, endRowIndex: 5, startColumnIndex: 4, endColumnIndex: 6 },
+        cell: { userEnteredFormat: { textFormat: { foregroundColor: color(100, 116, 139), bold: true, fontSize: 9 } } },
+        fields: 'userEnteredFormat.textFormat',
+      },
+    },
+    {
+      repeatCell: {
+        range: { sheetId: dashId, startRowIndex: 5, endRowIndex: 6, startColumnIndex: 4, endColumnIndex: 6 },
+        cell: {
+          userEnteredFormat: {
+            textFormat: { foregroundColor: color(21, 128, 61), bold: true, fontSize: 16 },
+            numberFormat: { type: 'CURRENCY', pattern: '"Rp"#,##0' },
+          },
+        },
+        fields: 'userEnteredFormat(textFormat,numberFormat)',
+      },
+    },
+    {
+      repeatCell: {
+        range: { sheetId: dashId, startRowIndex: 6, endRowIndex: 7, startColumnIndex: 4, endColumnIndex: 6 },
+        cell: { userEnteredFormat: { textFormat: { foregroundColor: color(148, 163, 184), fontSize: 8 } } },
+        fields: 'userEnteredFormat.textFormat',
+      },
+    },
 
-    // Chart 1: Donut Chart "Distribusi Pengeluaran per Kategori" (B13 ke F32)
+    // Card 3: Pengeluaran (H5:I7)
+    {
+      repeatCell: {
+        range: { sheetId: dashId, startRowIndex: 4, endRowIndex: 7, startColumnIndex: 7, endColumnIndex: 9 },
+        cell: {
+          userEnteredFormat: {
+            backgroundColor: color(255, 255, 255),
+            borders: { top: borderCard, bottom: borderCard, left: borderCard, right: borderCard },
+            horizontalAlignment: 'CENTER',
+            verticalAlignment: 'MIDDLE',
+          },
+        },
+        fields: 'userEnteredFormat(backgroundColor,borders,horizontalAlignment,verticalAlignment)',
+      },
+    },
+    {
+      repeatCell: {
+        range: { sheetId: dashId, startRowIndex: 4, endRowIndex: 5, startColumnIndex: 7, endColumnIndex: 9 },
+        cell: { userEnteredFormat: { textFormat: { foregroundColor: color(100, 116, 139), bold: true, fontSize: 9 } } },
+        fields: 'userEnteredFormat.textFormat',
+      },
+    },
+    {
+      repeatCell: {
+        range: { sheetId: dashId, startRowIndex: 5, endRowIndex: 6, startColumnIndex: 7, endColumnIndex: 9 },
+        cell: {
+          userEnteredFormat: {
+            textFormat: { foregroundColor: color(220, 38, 38), bold: true, fontSize: 16 },
+            numberFormat: { type: 'CURRENCY', pattern: '"Rp"#,##0' },
+          },
+        },
+        fields: 'userEnteredFormat(textFormat,numberFormat)',
+      },
+    },
+    {
+      repeatCell: {
+        range: { sheetId: dashId, startRowIndex: 6, endRowIndex: 7, startColumnIndex: 7, endColumnIndex: 9 },
+        cell: { userEnteredFormat: { textFormat: { foregroundColor: color(148, 163, 184), fontSize: 8 } } },
+        fields: 'userEnteredFormat.textFormat',
+      },
+    },
+
+    // Card 4: Anggota Aktif (K5:L7)
+    {
+      repeatCell: {
+        range: { sheetId: dashId, startRowIndex: 4, endRowIndex: 7, startColumnIndex: 10, endColumnIndex: 12 },
+        cell: {
+          userEnteredFormat: {
+            backgroundColor: color(255, 255, 255),
+            borders: { top: borderCard, bottom: borderCard, left: borderCard, right: borderCard },
+            horizontalAlignment: 'CENTER',
+            verticalAlignment: 'MIDDLE',
+          },
+        },
+        fields: 'userEnteredFormat(backgroundColor,borders,horizontalAlignment,verticalAlignment)',
+      },
+    },
+    {
+      repeatCell: {
+        range: { sheetId: dashId, startRowIndex: 4, endRowIndex: 5, startColumnIndex: 10, endColumnIndex: 12 },
+        cell: { userEnteredFormat: { textFormat: { foregroundColor: color(100, 116, 139), bold: true, fontSize: 9 } } },
+        fields: 'userEnteredFormat.textFormat',
+      },
+    },
+    {
+      repeatCell: {
+        range: { sheetId: dashId, startRowIndex: 5, endRowIndex: 6, startColumnIndex: 10, endColumnIndex: 12 },
+        cell: {
+          userEnteredFormat: {
+            textFormat: { foregroundColor: color(29, 78, 216), bold: true, fontSize: 16 },
+            numberFormat: { type: 'NUMBER', pattern: '#,##0" Orang"' },
+          },
+        },
+        fields: 'userEnteredFormat(textFormat,numberFormat)',
+      },
+    },
+    {
+      repeatCell: {
+        range: { sheetId: dashId, startRowIndex: 6, endRowIndex: 7, startColumnIndex: 10, endColumnIndex: 12 },
+        cell: { userEnteredFormat: { textFormat: { foregroundColor: color(148, 163, 184), fontSize: 8 } } },
+        fields: 'userEnteredFormat.textFormat',
+      },
+    },
+
+    // Card 5: Iuran Kas (N5:O7)
+    {
+      repeatCell: {
+        range: { sheetId: dashId, startRowIndex: 4, endRowIndex: 7, startColumnIndex: 13, endColumnIndex: 15 },
+        cell: {
+          userEnteredFormat: {
+            backgroundColor: color(255, 255, 255),
+            borders: { top: borderCard, bottom: borderCard, left: borderCard, right: borderCard },
+            horizontalAlignment: 'CENTER',
+            verticalAlignment: 'MIDDLE',
+          },
+        },
+        fields: 'userEnteredFormat(backgroundColor,borders,horizontalAlignment,verticalAlignment)',
+      },
+    },
+    {
+      repeatCell: {
+        range: { sheetId: dashId, startRowIndex: 4, endRowIndex: 5, startColumnIndex: 13, endColumnIndex: 15 },
+        cell: { userEnteredFormat: { textFormat: { foregroundColor: color(100, 116, 139), bold: true, fontSize: 9 } } },
+        fields: 'userEnteredFormat.textFormat',
+      },
+    },
+    {
+      repeatCell: {
+        range: { sheetId: dashId, startRowIndex: 5, endRowIndex: 6, startColumnIndex: 13, endColumnIndex: 15 },
+        cell: {
+          userEnteredFormat: {
+            textFormat: { foregroundColor: color(217, 119, 6), bold: true, fontSize: 16 },
+            numberFormat: { type: 'CURRENCY', pattern: '"Rp"#,##0' },
+          },
+        },
+        fields: 'userEnteredFormat(textFormat,numberFormat)',
+      },
+    },
+    {
+      repeatCell: {
+        range: { sheetId: dashId, startRowIndex: 6, endRowIndex: 7, startColumnIndex: 13, endColumnIndex: 15 },
+        cell: { userEnteredFormat: { textFormat: { foregroundColor: color(148, 163, 184), fontSize: 8 } } },
+        fields: 'userEnteredFormat.textFormat',
+      },
+    },
+
+    // -------------------------------------------------------------
+    // Styling 4 Wadah Widget Kartu Putih (Card Containers)
+    // -------------------------------------------------------------
+    // Widget 1 Container (B9:G27 - Donut Chart)
+    {
+      repeatCell: {
+        range: { sheetId: dashId, startRowIndex: 8, endRowIndex: 27, startColumnIndex: 1, endColumnIndex: 7 },
+        cell: {
+          userEnteredFormat: {
+            backgroundColor: color(255, 255, 255),
+            borders: { top: borderCard, bottom: borderCard, left: borderCard, right: borderCard },
+          },
+        },
+        fields: 'userEnteredFormat(backgroundColor,borders)',
+      },
+    },
+    // Widget 1 Header Label
+    {
+      repeatCell: {
+        range: { sheetId: dashId, startRowIndex: 8, endRowIndex: 9, startColumnIndex: 1, endColumnIndex: 7 },
+        cell: {
+          userEnteredFormat: {
+            textFormat: { foregroundColor: color(30, 41, 59), bold: true, fontSize: 10 },
+            verticalAlignment: 'MIDDLE',
+          },
+        },
+        fields: 'userEnteredFormat(textFormat,verticalAlignment)',
+      },
+    },
+
+    // Widget 2 Container (H9:O27 - Annual Column Chart)
+    {
+      repeatCell: {
+        range: { sheetId: dashId, startRowIndex: 8, endRowIndex: 27, startColumnIndex: 7, endColumnIndex: 15 },
+        cell: {
+          userEnteredFormat: {
+            backgroundColor: color(255, 255, 255),
+            borders: { top: borderCard, bottom: borderCard, left: borderCard, right: borderCard },
+          },
+        },
+        fields: 'userEnteredFormat(backgroundColor,borders)',
+      },
+    },
+    // Widget 2 Header Label
+    {
+      repeatCell: {
+        range: { sheetId: dashId, startRowIndex: 8, endRowIndex: 9, startColumnIndex: 7, endColumnIndex: 15 },
+        cell: {
+          userEnteredFormat: {
+            textFormat: { foregroundColor: color(30, 41, 59), bold: true, fontSize: 10 },
+            verticalAlignment: 'MIDDLE',
+          },
+        },
+        fields: 'userEnteredFormat(textFormat,verticalAlignment)',
+      },
+    },
+
+    // Widget 3 Container (B29:G45 - Monthly Trend Chart)
+    {
+      repeatCell: {
+        range: { sheetId: dashId, startRowIndex: 28, endRowIndex: 45, startColumnIndex: 1, endColumnIndex: 7 },
+        cell: {
+          userEnteredFormat: {
+            backgroundColor: color(255, 255, 255),
+            borders: { top: borderCard, bottom: borderCard, left: borderCard, right: borderCard },
+          },
+        },
+        fields: 'userEnteredFormat(backgroundColor,borders)',
+      },
+    },
+    // Widget 3 Header Label
+    {
+      repeatCell: {
+        range: { sheetId: dashId, startRowIndex: 28, endRowIndex: 29, startColumnIndex: 1, endColumnIndex: 7 },
+        cell: {
+          userEnteredFormat: {
+            textFormat: { foregroundColor: color(30, 41, 59), bold: true, fontSize: 10 },
+            verticalAlignment: 'MIDDLE',
+          },
+        },
+        fields: 'userEnteredFormat(textFormat,verticalAlignment)',
+      },
+    },
+
+    // Widget 4 Container (H29:O45 - Top 5 Kategori & Key Metrics)
+    {
+      repeatCell: {
+        range: { sheetId: dashId, startRowIndex: 28, endRowIndex: 45, startColumnIndex: 7, endColumnIndex: 15 },
+        cell: {
+          userEnteredFormat: {
+            backgroundColor: color(255, 255, 255),
+            borders: { top: borderCard, bottom: borderCard, left: borderCard, right: borderCard },
+          },
+        },
+        fields: 'userEnteredFormat(backgroundColor,borders)',
+      },
+    },
+    // Widget 4 Header Label
+    {
+      repeatCell: {
+        range: { sheetId: dashId, startRowIndex: 28, endRowIndex: 29, startColumnIndex: 7, endColumnIndex: 15 },
+        cell: {
+          userEnteredFormat: {
+            textFormat: { foregroundColor: color(30, 41, 59), bold: true, fontSize: 10 },
+            verticalAlignment: 'MIDDLE',
+          },
+        },
+        fields: 'userEnteredFormat(textFormat,verticalAlignment)',
+      },
+    },
+
+    // Format Subheader Widget 4 (Row 30)
+    {
+      repeatCell: {
+        range: { sheetId: dashId, startRowIndex: 29, endRowIndex: 30, startColumnIndex: 8, endColumnIndex: 15 },
+        cell: {
+          userEnteredFormat: {
+            backgroundColor: color(248, 250, 252),
+            textFormat: { foregroundColor: color(71, 85, 105), bold: true, fontSize: 9 },
+            verticalAlignment: 'MIDDLE',
+          },
+        },
+        fields: 'userEnteredFormat(backgroundColor,textFormat,verticalAlignment)',
+      },
+    },
+    // Format Tabel Top 5 di Widget 4:
+    // Kolom J (Nominal) Currency
+    {
+      repeatCell: {
+        range: { sheetId: dashId, startRowIndex: 30, endRowIndex: 35, startColumnIndex: 9, endColumnIndex: 10 },
+        cell: {
+          userEnteredFormat: {
+            numberFormat: { type: 'CURRENCY', pattern: '"Rp"#,##0' },
+            textFormat: { bold: true, fontSize: 9, foregroundColor: color(15, 23, 42) },
+            horizontalAlignment: 'RIGHT',
+            verticalAlignment: 'MIDDLE',
+          },
+        },
+        fields: 'userEnteredFormat(numberFormat,textFormat,horizontalAlignment,verticalAlignment)',
+      },
+    },
+    // Kolom K (Proporsi) Percentage
+    {
+      repeatCell: {
+        range: { sheetId: dashId, startRowIndex: 30, endRowIndex: 35, startColumnIndex: 10, endColumnIndex: 11 },
+        cell: {
+          userEnteredFormat: {
+            numberFormat: { type: 'PERCENT', pattern: '0.0%' },
+            textFormat: { fontSize: 9, foregroundColor: color(100, 116, 139) },
+            horizontalAlignment: 'RIGHT',
+            verticalAlignment: 'MIDDLE',
+          },
+        },
+        fields: 'userEnteredFormat(numberFormat,textFormat,horizontalAlignment,verticalAlignment)',
+      },
+    },
+    // Kolom M (Indikator Kas)
+    {
+      repeatCell: {
+        range: { sheetId: dashId, startRowIndex: 30, endRowIndex: 35, startColumnIndex: 12, endColumnIndex: 13 },
+        cell: {
+          userEnteredFormat: {
+            textFormat: { fontSize: 9, foregroundColor: color(100, 116, 139), bold: true },
+            horizontalAlignment: 'RIGHT',
+            verticalAlignment: 'MIDDLE',
+          },
+        },
+        fields: 'userEnteredFormat(textFormat,horizontalAlignment,verticalAlignment)',
+      },
+    },
+    // Kolom N (Nilai Indikator)
+    {
+      repeatCell: {
+        range: { sheetId: dashId, startRowIndex: 30, endRowIndex: 35, startColumnIndex: 13, endColumnIndex: 15 },
+        cell: {
+          userEnteredFormat: {
+            textFormat: { fontSize: 9, foregroundColor: color(15, 23, 42), bold: true },
+            horizontalAlignment: 'LEFT',
+            verticalAlignment: 'MIDDLE',
+          },
+        },
+        fields: 'userEnteredFormat(textFormat,horizontalAlignment,verticalAlignment)',
+      },
+    },
+
+    // -------------------------------------------------------------
+    // 8. Pasang 3 Chart Profesional di Atas Wadah Kartu Putih
+    // -------------------------------------------------------------
+
+    // Chart 1: Donut Chart "Distribusi Pengeluaran per Kategori" (Wadah Kiri Atas)
     {
       addChart: {
         chart: {
           spec: {
-            title: '🍩 Distribusi Pengeluaran per Kategori',
-            titleTextFormat: { bold: true, fontSize: 13, foregroundColor: color(15, 23, 42) },
+            title: '',
             pieChart: {
-              pieHole: 0.44, // Donut hole
+              pieHole: 0.48, // Modern donut
               legendPosition: 'RIGHT_LEGEND',
               domain: {
                 sourceRange: {
@@ -683,22 +953,23 @@ async function run() {
           },
           position: {
             overlayPosition: {
-              anchorCell: { sheetId: dashId, rowIndex: 12, columnIndex: 1 },
-              widthPixels: 510,
-              heightPixels: 400,
+              anchorCell: { sheetId: dashId, rowIndex: 9, columnIndex: 1 },
+              offsetXPixels: 10,
+              offsetYPixels: 5,
+              widthPixels: 490,
+              heightPixels: 310,
             },
           },
         },
       },
     },
 
-    // Chart 2: Column Chart "Arus Kas Tahunan (Pemasukan vs Pengeluaran)" (G13 ke J32)
+    // Chart 2: Column Chart "Arus Kas Tahunan (Pemasukan vs Pengeluaran)" (Wadah Kanan Atas)
     {
       addChart: {
         chart: {
           spec: {
-            title: '📊 Perbandingan Arus Kas per Tahun (Pemasukan vs Pengeluaran)',
-            titleTextFormat: { bold: true, fontSize: 13, foregroundColor: color(15, 23, 42) },
+            title: '',
             basicChart: {
               chartType: 'COLUMN',
               legendPosition: 'BOTTOM_LEGEND',
@@ -737,7 +1008,7 @@ async function run() {
                   },
                   targetAxis: 'LEFT_AXIS',
                   colorStyle: {
-                    rgbColor: color(16, 185, 129), // Emerald Green Pemasukan
+                    rgbColor: color(16, 185, 129), // Emerald Green
                   },
                 },
                 {
@@ -756,7 +1027,7 @@ async function run() {
                   },
                   targetAxis: 'LEFT_AXIS',
                   colorStyle: {
-                    rgbColor: color(239, 68, 68), // Crimson Red Pengeluaran
+                    rgbColor: color(239, 68, 68), // Crimson Red
                   },
                 },
               ],
@@ -764,10 +1035,93 @@ async function run() {
           },
           position: {
             overlayPosition: {
-              anchorCell: { sheetId: dashId, rowIndex: 12, columnIndex: 4 },
-              offsetXPixels: 20,
-              widthPixels: 580,
-              heightPixels: 400,
+              anchorCell: { sheetId: dashId, rowIndex: 9, columnIndex: 7 },
+              offsetXPixels: 15,
+              offsetYPixels: 5,
+              widthPixels: 560,
+              heightPixels: 310,
+            },
+          },
+        },
+      },
+    },
+
+    // Chart 3: Area / Line / Column Chart "Tren Kas Bulanan 2026" (Wadah Kiri Bawah)
+    {
+      addChart: {
+        chart: {
+          spec: {
+            title: '',
+            basicChart: {
+              chartType: 'COLUMN',
+              legendPosition: 'BOTTOM_LEGEND',
+              headerCount: 1,
+              domains: [
+                {
+                  domain: {
+                    sourceRange: {
+                      sources: [
+                        {
+                          sheetId: dDataId,
+                          startRowIndex: 0,
+                          endRowIndex: 13,
+                          startColumnIndex: 7,
+                          endColumnIndex: 8,
+                        },
+                      ],
+                    },
+                  },
+                },
+              ],
+              series: [
+                {
+                  series: {
+                    sourceRange: {
+                      sources: [
+                        {
+                          sheetId: dDataId,
+                          startRowIndex: 0,
+                          endRowIndex: 13,
+                          startColumnIndex: 8,
+                          endColumnIndex: 9,
+                        },
+                      ],
+                    },
+                  },
+                  targetAxis: 'LEFT_AXIS',
+                  colorStyle: {
+                    rgbColor: color(16, 185, 129),
+                  },
+                },
+                {
+                  series: {
+                    sourceRange: {
+                      sources: [
+                        {
+                          sheetId: dDataId,
+                          startRowIndex: 0,
+                          endRowIndex: 13,
+                          startColumnIndex: 9,
+                          endColumnIndex: 10,
+                        },
+                      ],
+                    },
+                  },
+                  targetAxis: 'LEFT_AXIS',
+                  colorStyle: {
+                    rgbColor: color(239, 68, 68),
+                  },
+                },
+              ],
+            },
+          },
+          position: {
+            overlayPosition: {
+              anchorCell: { sheetId: dashId, rowIndex: 29, columnIndex: 1 },
+              offsetXPixels: 10,
+              offsetYPixels: 5,
+              widthPixels: 490,
+              heightPixels: 260,
             },
           },
         },
@@ -775,13 +1129,13 @@ async function run() {
     },
   ];
 
-  console.log(`Mengirim ${uiRequests.length} perintah styling murni & grafik ke Google Sheets...`);
+  console.log(`Mengirim ${uiRequests.length} perintah styling kartu & 3 chart ke Google Sheets...`);
   await sheets.spreadsheets.batchUpdate({
     spreadsheetId,
     requestBody: { requests: uiRequests },
   });
 
-  console.log('🎉 Dashboard Asli Bersih (Hanya Chart, Pilihan Filter & KPI Cards) Berhasil Dibuat!');
+  console.log('🎉 Dashboard Modern Gaya Excel / Power BI Berhasil Terpasang Sempurna!');
 }
 
 run().catch((err) => {
