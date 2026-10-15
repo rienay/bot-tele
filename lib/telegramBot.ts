@@ -28,6 +28,7 @@ import {
 import { uploadReceiptToDrive } from './googleDrive';
 import { formatPrivateKey, getGoogleAuth } from './googleAuth';
 import { generateNotaPdf, HARGA_PER_KG, rupiahFormat } from './generateNota';
+import { ExpenseDetail } from './types';
 
 // Paksa IPv4 untuk menghindari timeout koneksi IPv6 ke server Telegram di jaringan Windows/ISP lokal
 try {
@@ -397,6 +398,48 @@ function escapeTelegramMarkdown(text: string): string {
   return String(text || '').replace(/[_*[\]`\\]/g, '\\$&');
 }
 
+// Helper: Buat blok daftar transaksi per tanggal
+function buildTransactionDateBlocks(items: ExpenseDetail[], defaultType: string): string[] {
+  const blocks: string[] = [];
+  if (!items || items.length === 0) return blocks;
+
+  const grouped: Record<string, ExpenseDetail[]> = {};
+  for (const it of items) {
+    const d = it.date || 'Lainnya';
+    if (!grouped[d]) grouped[d] = [];
+    grouped[d].push(it);
+  }
+
+  const sortedDates = Object.keys(grouped).sort((a, b) => a.localeCompare(b));
+
+  for (const d of sortedDates) {
+    const list = grouped[d];
+    const subtotal = list.reduce((sum, item) => sum + item.nominal, 0);
+    const tglFormatted = formatIndonesianDate(d);
+
+    let block = `🗓️ *${tglFormatted}*`;
+    if (list.length > 1) {
+      block += ` _(Total: ${formatRupiah(subtotal)})_`;
+    }
+    block += `\n`;
+
+    for (const item of list) {
+      const desc = item.description && item.description !== '-' ? escapeTelegramMarkdown(item.description) : '';
+      const cat = escapeTelegramMarkdown(item.category);
+      const nominal = formatRupiah(item.nominal);
+
+      if (desc && desc.toLowerCase() !== cat.toLowerCase()) {
+        block += ` • ${desc} _(${cat})_: ${nominal}\n`;
+      } else {
+        block += ` • ${cat || defaultType}: ${nominal}\n`;
+      }
+    }
+    blocks.push(block.trimEnd());
+  }
+
+  return blocks;
+}
+
 // Helper: Mengirim pesan rekap buku kegiatan aktif
 async function sendRekap(ctx: any, queryText: string = '') {
   try {
@@ -424,9 +467,17 @@ async function sendRekap(ctx: any, queryText: string = '') {
     headerMsg += `${selisihLabel} ${formatRupiah(summary.saldo)}\n`;
     headerMsg += `📝 *Jumlah Transaksi:* ${summary.count} transaksi\n`;
 
-    const expKeys = Object.keys(summary.categoryExpenses);
+    const incomeKeys = Object.keys(summary.categoryIncome || {});
+    if (incomeKeys.length > 0) {
+      headerMsg += `\n📥 *Ringkasan Kategori Pemasukan:*`;
+      for (const kat of incomeKeys.sort((a, b) => summary.categoryIncome[b] - summary.categoryIncome[a])) {
+        headerMsg += `\n • ${escapeTelegramMarkdown(kat)}: ${formatRupiah(summary.categoryIncome[kat])}`;
+      }
+    }
+
+    const expKeys = Object.keys(summary.categoryExpenses || {});
     if (expKeys.length > 0) {
-      headerMsg += `\n🏷️ *Ringkasan Kategori Pengeluaran:*`;
+      headerMsg += `\n\n📤 *Ringkasan Kategori Pengeluaran:*`;
       for (const kat of expKeys.sort((a, b) => summary.categoryExpenses[b] - summary.categoryExpenses[a])) {
         headerMsg += `\n • ${escapeTelegramMarkdown(kat)}: ${formatRupiah(summary.categoryExpenses[kat])}`;
       }
@@ -436,59 +487,45 @@ async function sendRekap(ctx: any, queryText: string = '') {
       headerMsg += `\n\nℹ️ _Belum ada transaksi yang tercatat pada buku ini._`;
     }
 
-    // Kelompokkan semua pengeluaran berdasarkan tanggal
-    const dateBlocks: string[] = [];
-    if (summary.expenseDetails && summary.expenseDetails.length > 0) {
-      const grouped: Record<string, typeof summary.expenseDetails> = {};
-      for (const exp of summary.expenseDetails) {
-        const d = exp.date || 'Lainnya';
-        if (!grouped[d]) grouped[d] = [];
-        grouped[d].push(exp);
-      }
-
-      // Urutkan tanggal secara kronologis (dari awal ke akhir)
-      const sortedDates = Object.keys(grouped).sort((a, b) => a.localeCompare(b));
-
-      for (const d of sortedDates) {
-        const items = grouped[d];
-        const subtotal = items.reduce((sum, item) => sum + item.nominal, 0);
-        const tglFormatted = formatIndonesianDate(d);
-
-        let block = `🗓️ *${tglFormatted}*`;
-        if (items.length > 1) {
-          block += ` _(Total: ${formatRupiah(subtotal)})_`;
-        }
-        block += `\n`;
-
-        for (const item of items) {
-          const desc = item.description && item.description !== '-' ? escapeTelegramMarkdown(item.description) : '';
-          const cat = escapeTelegramMarkdown(item.category);
-          const nominal = formatRupiah(item.nominal);
-
-          if (desc && desc.toLowerCase() !== cat.toLowerCase()) {
-            block += ` • ${desc} _(${cat})_: ${nominal}\n`;
-          } else {
-            block += ` • ${cat || 'Pengeluaran'}: ${nominal}\n`;
-          }
-        }
-        dateBlocks.push(block.trimEnd());
-      }
-    }
+    // Kelompokkan pemasukan & pengeluaran per tanggal
+    const incomeDateBlocks = buildTransactionDateBlocks(summary.incomeDetails || [], 'Pemasukan');
+    const expenseDateBlocks = buildTransactionDateBlocks(summary.expenseDetails || [], 'Pengeluaran');
 
     // Susun pesan dan pecah per chunk jika terlalu panjang (batas aman 3500 karakter)
     const chunks: string[] = [];
     let currentChunk = headerMsg;
 
-    if (dateBlocks.length > 0) {
-      const sectionDivider = `\n\n━━━━━━━━━━━━━━━━━━━━━\n📋 *Rincian Pengeluaran per Tanggal:*\n`;
+    // Bagian Rincian Pemasukan per Tanggal
+    if (incomeDateBlocks.length > 0) {
+      const sectionDivider = `\n\n━━━━━━━━━━━━━━━━━━━━━\n📥 *Rincian Pemasukan per Tanggal:*\n`;
       if ((currentChunk + sectionDivider).length <= 3500) {
         currentChunk += sectionDivider;
       } else {
         chunks.push(currentChunk.trim());
-        currentChunk = `📋 *Rincian Pengeluaran per Tanggal:*\n`;
+        currentChunk = `📥 *Rincian Pemasukan per Tanggal:*\n`;
       }
 
-      for (const block of dateBlocks) {
+      for (const block of incomeDateBlocks) {
+        if ((currentChunk + '\n\n' + block).length > 3500) {
+          chunks.push(currentChunk.trim());
+          currentChunk = block;
+        } else {
+          currentChunk += (currentChunk.endsWith('\n') ? '\n' : '\n\n') + block;
+        }
+      }
+    }
+
+    // Bagian Rincian Pengeluaran per Tanggal
+    if (expenseDateBlocks.length > 0) {
+      const sectionDivider = `\n\n━━━━━━━━━━━━━━━━━━━━━\n📤 *Rincian Pengeluaran per Tanggal:*\n`;
+      if ((currentChunk + sectionDivider).length <= 3500) {
+        currentChunk += sectionDivider;
+      } else {
+        chunks.push(currentChunk.trim());
+        currentChunk = `📤 *Rincian Pengeluaran per Tanggal:*\n`;
+      }
+
+      for (const block of expenseDateBlocks) {
         if ((currentChunk + '\n\n' + block).length > 3500) {
           chunks.push(currentChunk.trim());
           currentChunk = block;

@@ -28,7 +28,7 @@ export interface SummaryReport {
   categoryExpenses: Record<string, number>;
   categoryIncome: Record<string, number>;
   expenseDetails: ExpenseDetail[];
-  incomeDetails?: ExpenseDetail[];
+  incomeDetails: ExpenseDetail[];
 }
 
 export interface BookSummary {
