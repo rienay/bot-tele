@@ -1962,6 +1962,15 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
               `🔗 [Buka Foto di Google Drive](${driveLink})`,
             { parse_mode: 'Markdown', link_preview_options: { is_disabled: true } }
           ).catch(console.error);
+        } else {
+          await ctx.reply(
+            `⚠️ *Peringatan Google Drive:*\n` +
+              `Transaksi berhasil dicatat ke Sheets, tetapi foto nota *gagal tersimpan ke Google Drive*.\n\n` +
+              `💡 *Penyebab:* Folder Drive belum dibagikan ke email robot:\n` +
+              `\`${process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || 'bot-uang-dkc@catat-keuangan-509403.iam.gserviceaccount.com'}\`\n\n` +
+              `Silakan buka folder Google Drive Anda lalu share folder tersebut ke email robot dengan akses *Editor*.`,
+            { parse_mode: 'Markdown' }
+          ).catch(console.error);
         }
       } catch (uploadErr) {
         console.error('Error saat upload background ke Drive:', uploadErr);
