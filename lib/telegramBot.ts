@@ -30,6 +30,17 @@ import { uploadReceiptToDrive } from './googleDrive';
 import { formatPrivateKey, getGoogleAuth } from './googleAuth';
 import { generateNotaPdf, HARGA_PER_KG, rupiahFormat } from './generateNota';
 import { ExpenseDetail } from './types';
+import {
+  checkUserAccess,
+  isUserAdmin,
+  registerUserRequest,
+  approveUser,
+  rejectUser,
+  revokeUser,
+  getAllUsers,
+  getAdminTelegramId,
+  getUserRecord,
+} from './userAccess';
 
 // Paksa IPv4 untuk menghindari timeout koneksi IPv6 ke server Telegram di jaringan Windows/ISP lokal
 try {
@@ -109,6 +120,8 @@ async function syncBotCommands(api: any) {
       { command: 'cekkas', description: 'Cek kas anggota (lunas & belum bayar)' },
       { command: 'bayarkas', description: 'Catat pembayaran kas anggota' },
       { command: 'anggota', description: 'Daftar & kelola anggota kas' },
+      { command: 'akses', description: 'Kelola hak akses & anggota bot' },
+      { command: 'invite', description: 'Cara undang anggota baru' },
     ];
 
     // Tambahkan command untuk buku kegiatan yang valid (hanya huruf, angka, underscore)
@@ -126,7 +139,7 @@ async function syncBotCommands(api: any) {
   }
 }
 
-// Middleware Keamanan: Whitelist Telegram User ID
+// Middleware Keamanan: Kontrol Akses & Sistem Persetujuan Otomatis
 bot.use(async (ctx, next) => {
   const updateId = ctx.update.update_id;
   if (processedUpdateIds.has(updateId)) {
@@ -139,19 +152,85 @@ bot.use(async (ctx, next) => {
     if (firstItem !== undefined) processedUpdateIds.delete(firstItem);
   }
 
-  const allowed = process.env.ALLOWED_TELEGRAM_USER_IDS;
-  if (allowed && allowed.trim() !== '') {
-    const list = allowed.split(',').map((id) => id.trim());
-    const senderId = String(ctx.from?.id);
-    if (!list.includes(senderId)) {
-      await ctx.reply(
-        `⛔ *Akses Dibatasi*\nID Telegram Anda adalah: \`${senderId}\`\n\nUntuk mengizinkan akun ini menggunakan bot, tambahkan ID di atas ke variabel \`ALLOWED_TELEGRAM_USER_IDS\` di file konfigurasi.`,
-        { parse_mode: 'Markdown' }
-      );
-      return;
-    }
+  // Izinkan callback query persetujuan/pencabutan akses diproses langsung oleh handler
+  if (ctx.callbackQuery?.data?.startsWith('user_access:')) {
+    await next();
+    return;
   }
-  await next();
+
+  const senderId = String(ctx.from?.id);
+  const senderName = ctx.from?.first_name || 'Pengguna';
+  const username = ctx.from?.username ? `@${ctx.from.username}` : '';
+
+  const accessStatus = await checkUserAccess(senderId);
+
+  if (accessStatus === 'Aktif') {
+    await next();
+    return;
+  }
+
+  if (accessStatus === 'Menunggu') {
+    await ctx.reply(
+      `⏳ *Permintaan Akses Sedang Menunggu Persetujuan Admin*\n\n` +
+        `Halo *${senderName}*, permintaan akses untuk akun Anda (ID: \`${senderId}\`) telah dikirimkan ke Admin.\n` +
+        `Mohon ditunggu ya! Begitu Admin menekan tombol izinkan, Anda akan otomatis mendapatkan notifikasi di sini. 😊`,
+      { parse_mode: 'Markdown' }
+    );
+    return;
+  }
+
+  if (accessStatus === 'Ditolak' || accessStatus === 'Nonaktif') {
+    await ctx.reply(
+      `⛔ *Akses Tidak Diizinkan*\n\n` +
+        `Akun Telegram Anda (ID: \`${senderId}\`) saat ini berstatus *${accessStatus}*.\n` +
+        `Silakan hubungi Admin jika Anda memerlukan akses kembali ke bot ini.`,
+      { parse_mode: 'Markdown' }
+    );
+    return;
+  }
+
+  // Jika status 'Belum_Ada': Daftarkan permintaan baru dan kirim tombol interaktif ke Admin
+  try {
+    await registerUserRequest(senderId, senderName, ctx.from?.username || '');
+
+    await ctx.reply(
+      `⏳ *Permintaan Akses Terkirim!*\n\n` +
+        `Halo *${senderName}*! Bot pencatat keuangan ini bersifat privat.\n` +
+        `Permintaan akses Anda telah otomatis diteruskan ke Admin untuk disetujui.\n\n` +
+        `Mohon ditunggu sebentar ya! Anda akan otomatis menerima notifikasi di sini begitu akses dibuka oleh Admin. 😊\n\n` +
+        `🆔 _ID Telegram Anda:_ \`${senderId}\``,
+      { parse_mode: 'Markdown' }
+    );
+
+    const adminId = getAdminTelegramId();
+    const adminKb = new InlineKeyboard()
+      .text('✅ Izinkan Akses', `user_access:approve:${senderId}`)
+      .text('❌ Tolak', `user_access:reject:${senderId}`);
+
+    const nowJakarta = new Intl.DateTimeFormat('id-ID', {
+      timeZone: 'Asia/Jakarta',
+      dateStyle: 'short',
+      timeStyle: 'medium',
+    }).format(new Date());
+
+    await ctx.api.sendMessage(
+      adminId,
+      `🔔 *Permintaan Akses Anggota Baru!*\n\n` +
+        `Ada pengguna baru yang ingin bergabung dan menggunakan bot:\n` +
+        `👤 *Nama:* ${senderName}\n` +
+        `🔗 *Username:* ${username || '_(tidak ada)_'}\n` +
+        `🆔 *Telegram ID:* \`${senderId}\`\n` +
+        `📅 *Waktu:* ${nowJakarta}\n\n` +
+        `Apakah Anda ingin mengizinkan pengguna ini untuk mencatat keuangan?`,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: adminKb,
+      }
+    );
+  } catch (err) {
+    console.error('Error saat pendaftaran user baru:', err);
+    await ctx.reply('Terjadi kendala saat memproses permintaan akses. Silakan coba sesaat lagi.');
+  }
 });
 
 // Helper: Membangun tombol keyboard buku
@@ -174,9 +253,10 @@ bot.command(['start', 'help'], async (ctx) => {
   const senderId = ctx.from?.id;
   const chatId = ctx.chat.id;
 
-  const [activeBook, books] = await Promise.all([
+  const [activeBook, books, isAdmin] = await Promise.all([
     getUserActiveBook(chatId),
     getAllSheetBooks(),
+    isUserAdmin(senderId || 0),
   ]);
 
   // Sync menu command di background
@@ -190,6 +270,14 @@ bot.command(['start', 'help'], async (ctx) => {
   }
 
   const keyboard = await buildBooksKeyboard(activeBook);
+
+  const adminMenuText = isAdmin
+    ? `🔐 *Menu Hak Akses & Monitoring (Admin):*\n` +
+      `• /akses — Kelola & cabut hak akses anggota bot\n` +
+      `• /invite — Panduan mengundang anggota baru\n` +
+      `• /izinkan <ID> [Nama] — Izinkan akses anggota manual\n` +
+      `• /cabut <ID> — Cabut izin akses anggota\n\n`
+    : '';
 
   await ctx.reply(
     `👋 *Halo! Saya Bot Pencatat Keuangan & Kas Anggota.*\n\n` +
@@ -206,6 +294,7 @@ bot.command(['start', 'help'], async (ctx) => {
       `• /cekkas — *Cek Pembayaran Kas* (siapa yang lunas & belum)\n` +
       `• /bayarkas — *Catat Bayar Kas Anggota* (otomatis masuk ke Kas)\n` +
       `• /anggota — *Kelola Anggota* (daftar, tambah, nonaktifkan)\n\n` +
+      adminMenuText +
       `📚 *Buku Kegiatan Tersedia:*\n` +
       `${booksListText}\n` +
       `💡 *Cara Catat Transaksi Cepat:*\n` +
@@ -292,6 +381,309 @@ bot.callbackQuery(/^switch_book:(.+)$/, async (ctx) => {
     );
   } catch {
     // Abaikan jika tidak bisa edit pesan
+  }
+});
+
+// ============================================================
+// SISTEM KONTROL AKSES ANGGOTA & MONITORING ADMIN
+// ============================================================
+
+// Callback: Persetujuan akses anggota baru oleh Admin
+bot.callbackQuery(/^user_access:approve:(.+)$/, async (ctx) => {
+  const targetId = ctx.match[1];
+  const adminId = String(ctx.from?.id);
+  const isAdmin = await isUserAdmin(adminId);
+
+  if (!isAdmin) {
+    await ctx.answerCallbackQuery({ text: '⛔ Hanya Admin yang dapat menyetujui akses!', show_alert: true });
+    return;
+  }
+
+  try {
+    await approveUser(targetId);
+    await ctx.answerCallbackQuery({ text: '✅ Akses anggota berhasil disetujui!' });
+
+    const targetUser = await getUserRecord(targetId);
+    const targetName = targetUser?.name || 'Anggota';
+    const targetUname = targetUser?.username ? `@${targetUser.username}` : '';
+
+    try {
+      await ctx.editMessageText(
+        `✅ *Akses Berhasil Disetujui!*\n\n` +
+          `👤 *Nama:* ${targetName} ${targetUname}\n` +
+          `🆔 *Telegram ID:* \`${targetId}\`\n` +
+          `Status: *Aktif (Member)*\n\n` +
+          `Pengguna sekarang dapat menggunakan bot untuk mencatat transaksi dan aktivitasnya akan dipantau di chat ini.`,
+        { parse_mode: 'Markdown' }
+      );
+    } catch {}
+
+    // Kirim notifikasi ke anggota yang disetujui
+    await ctx.api.sendMessage(
+      targetId,
+      `🎉 *Selamat! Akses Anda Telah Disetujui Admin!* 🚀\n\n` +
+        `Halo *${targetName}*, sekarang Anda sudah dapat menggunakan bot ini untuk mencatat keuangan & kas.\n\n` +
+        `💡 *Cara Cepat Mencatat:*\n` +
+        `• Kirim teks biasa: \`makan siang 35rb\`, \`beli bensin 50rb\`\n` +
+        `• Kirim foto struk/nota belanja: otomatis dibaca AI!\n` +
+        `• Ketik /start untuk melihat menu buku kas dan fitur lainnya.`,
+      { parse_mode: 'Markdown' }
+    ).catch(console.error);
+  } catch (error: any) {
+    console.error('Error approving user:', error);
+    await ctx.answerCallbackQuery({ text: `Gagal: ${error?.message || 'Error internal'}`, show_alert: true });
+  }
+});
+
+// Callback: Penolakan akses oleh Admin
+bot.callbackQuery(/^user_access:reject:(.+)$/, async (ctx) => {
+  const targetId = ctx.match[1];
+  const adminId = String(ctx.from?.id);
+  const isAdmin = await isUserAdmin(adminId);
+
+  if (!isAdmin) {
+    await ctx.answerCallbackQuery({ text: '⛔ Hanya Admin yang dapat menolak akses!', show_alert: true });
+    return;
+  }
+
+  try {
+    await rejectUser(targetId);
+    await ctx.answerCallbackQuery({ text: '❌ Permintaan akses ditolak.' });
+
+    const targetUser = await getUserRecord(targetId);
+    const targetName = targetUser?.name || 'Pengguna';
+
+    try {
+      await ctx.editMessageText(
+        `❌ *Permintaan Akses Ditolak*\n\n` +
+          `👤 *Nama:* ${targetName}\n` +
+          `🆔 *Telegram ID:* \`${targetId}\`\n` +
+          `Status: *Ditolak*`,
+        { parse_mode: 'Markdown' }
+      );
+    } catch {}
+
+    await ctx.api.sendMessage(
+      targetId,
+      `Mohon maaf, permintaan akses Anda ke bot pencatat keuangan ini belum disetujui oleh Admin.`,
+      { parse_mode: 'Markdown' }
+    ).catch(console.error);
+  } catch (error: any) {
+    console.error('Error rejecting user:', error);
+    await ctx.answerCallbackQuery({ text: `Gagal: ${error?.message || 'Error internal'}`, show_alert: true });
+  }
+});
+
+// Callback: Pencabutan akses anggota
+bot.callbackQuery(/^user_access:revoke:(.+)$/, async (ctx) => {
+  const targetId = ctx.match[1];
+  const adminId = String(ctx.from?.id);
+  const isAdmin = await isUserAdmin(adminId);
+
+  if (!isAdmin) {
+    await ctx.answerCallbackQuery({ text: '⛔ Hanya Admin yang dapat mencabut akses!', show_alert: true });
+    return;
+  }
+
+  try {
+    await revokeUser(targetId);
+    await ctx.answerCallbackQuery({ text: `Akses ID ${targetId} berhasil dicabut.` });
+
+    try {
+      await ctx.editMessageText(
+        `🚫 *Akses Berhasil Dicabut*\n\n` +
+          `Pengguna ID \`${targetId}\` telah dinonaktifkan dari akses bot.`,
+        { parse_mode: 'Markdown' }
+      );
+    } catch {}
+
+    await ctx.api.sendMessage(
+      targetId,
+      `⚠️ *Pemberitahuan:*\nAkses akun Telegram Anda ke bot pencatat keuangan telah dinonaktifkan oleh Admin.`,
+      { parse_mode: 'Markdown' }
+    ).catch(console.error);
+  } catch (error: any) {
+    console.error('Error revoking user:', error);
+    await ctx.answerCallbackQuery({ text: `Gagal: ${error?.message || 'Error internal'}`, show_alert: true });
+  }
+});
+
+// Command: /akses (Kelola akses anggota bot)
+bot.command(['akses', 'aksesbot', 'kelolaakses'], async (ctx) => {
+  const senderId = String(ctx.from?.id);
+  const isAdmin = await isUserAdmin(senderId);
+  if (!isAdmin) {
+    await ctx.reply('⛔ Fitur ini hanya dapat diakses oleh Admin.');
+    return;
+  }
+
+  await ctx.replyWithChatAction('typing');
+  const users = await getAllUsers(true);
+  const adminId = getAdminTelegramId();
+
+  let text = `🔐 *Kelola Hak Akses Anggota Bot*\n\n` +
+    `👑 *Admin / Pemilik:*\n` +
+    `• ID: \`${adminId}\`\n\n`;
+
+  const activeMembers = users.filter((u) => u.id !== adminId && u.status === 'Aktif');
+  const pendingMembers = users.filter((u) => u.status === 'Menunggu');
+  const inactiveMembers = users.filter((u) => u.id !== adminId && (u.status === 'Nonaktif' || u.status === 'Ditolak'));
+
+  const keyboard = new InlineKeyboard();
+
+  if (activeMembers.length > 0) {
+    text += `👥 *Anggota Aktif (${activeMembers.length}):*\n`;
+    activeMembers.forEach((u, i) => {
+      text += `${i + 1}. *${u.name}* ${u.username ? `(@${u.username})` : ''} — \`${u.id}\`\n`;
+      keyboard.text(`❌ Cabut: ${u.name.slice(0, 15)}`, `user_access:revoke:${u.id}`).row();
+    });
+    text += `\n`;
+  } else {
+    text += `👥 *Anggota Aktif:* _(Belum ada anggota luar yang diizinkan)_\n\n`;
+  }
+
+  if (pendingMembers.length > 0) {
+    text += `⏳ *Menunggu Persetujuan (${pendingMembers.length}):*\n`;
+    pendingMembers.forEach((u, i) => {
+      text += `${i + 1}. *${u.name}* ${u.username ? `(@${u.username})` : ''} — \`${u.id}\`\n`;
+      keyboard.text(`✅ Izinkan ${u.name.slice(0, 10)}`, `user_access:approve:${u.id}`)
+        .text(`❌ Tolak`, `user_access:reject:${u.id}`).row();
+    });
+    text += `\n`;
+  }
+
+  if (inactiveMembers.length > 0) {
+    text += `🚫 *Nonaktif / Ditolak (${inactiveMembers.length}):*\n`;
+    inactiveMembers.forEach((u, i) => {
+      text += `${i + 1}. ${u.name} — \`${u.id}\` (${u.status})\n`;
+      keyboard.text(`🔄 Pulihkan ${u.name.slice(0, 10)}`, `user_access:approve:${u.id}`).row();
+    });
+    text += `\n`;
+  }
+
+  text += `💡 *Perintah Cepat Admin:*\n` +
+    `• Ketik /invite untuk petunjuk mengundang teman\n` +
+    `• Ketik \`/izinkan <ID> [Nama]\` untuk izinkan langsung\n` +
+    `• Ketik \`/cabut <ID>\` untuk cabut akses manual`;
+
+  await ctx.reply(text, {
+    parse_mode: 'Markdown',
+    reply_markup: keyboard,
+  });
+});
+
+// Command: /invite (Petunjuk undang anggota baru)
+bot.command(['invite', 'undang'], async (ctx) => {
+  const senderId = String(ctx.from?.id);
+  const isAdmin = await isUserAdmin(senderId);
+  if (!isAdmin) {
+    await ctx.reply('⛔ Fitur ini hanya dapat diakses oleh Admin.');
+    return;
+  }
+
+  let botUsername = '';
+  try {
+    const me = await ctx.api.getMe();
+    botUsername = me.username || '';
+  } catch {}
+
+  const link = botUsername ? `https://t.me/${botUsername}` : 'username bot ini';
+
+  await ctx.reply(
+    `📩 *Cara Mengundang Anggota Baru:*\n\n` +
+      `1. *Bagikan Link Bot:*\n` +
+      `   Kirim link bot ini ke rekan Anda:\n` +
+      `   👉 ${link}\n\n` +
+      `2. *Teman Menekan Tombol /start:*\n` +
+      `   Minta teman Anda untuk membuka bot tersebut dan klik tombol *Start*.\n\n` +
+      `3. *Persetujuan Realtime (Interactive):*\n` +
+      `   Bot akan otomatis mengirim pesan konfirmasi ke chat Anda ini berisi tombol:\n` +
+      `   [ ✅ *Izinkan Akses* ] dan [ ❌ *Tolak* ]\n\n` +
+      `4. *Otomatis Terhubung & Dipantau:*\n` +
+      `   Setelah Anda klik *Izinkan*, teman Anda langsung bisa mencatat keuangan dan *setiap kali mereka mencatat transaksi / upload nota, Anda akan langsung menerima laporan realtime di sini!*\n\n` +
+      `💡 *Atau izinkan langsung tanpa menunggu mereka chat:*\n` +
+      `Ketik: \`/izinkan <ID_Telegram> [Nama]\`\n` +
+      `Contoh: \`/izinkan 12345678 Sulis\``,
+    { parse_mode: 'Markdown', link_preview_options: { is_disabled: true } }
+  );
+});
+
+// Command: /izinkan
+bot.command(['izinkan', 'approve'], async (ctx) => {
+  const senderId = String(ctx.from?.id);
+  const isAdmin = await isUserAdmin(senderId);
+  if (!isAdmin) {
+    await ctx.reply('⛔ Fitur ini hanya dapat diakses oleh Admin.');
+    return;
+  }
+
+  const text = ctx.message?.text || '';
+  const parts = text.split(' ').slice(1);
+  const targetId = parts[0]?.trim();
+  const targetName = parts.slice(1).join(' ').trim() || 'Anggota';
+
+  if (!targetId || !/^\d+$/.test(targetId)) {
+    await ctx.reply(
+      `💡 *Format Perintah:*\n\`/izinkan <ID_Telegram> [Nama]\`\n\nContoh: \`/izinkan 12345678 Sulis\``,
+      { parse_mode: 'Markdown' }
+    );
+    return;
+  }
+
+  try {
+    await approveUser(targetId, targetName);
+    await ctx.reply(
+      `✅ *Berhasil!* Pengguna *${targetName}* (\`${targetId}\`) telah diberikan izin akses ke bot.`,
+      { parse_mode: 'Markdown' }
+    );
+
+    await ctx.api.sendMessage(
+      targetId,
+      `🎉 *Selamat! Akun Anda telah diizinkan oleh Admin.* Sekarang Anda dapat menggunakan bot ini untuk mencatat keuangan.\nKetik /start untuk memulai.`,
+      { parse_mode: 'Markdown' }
+    ).catch(() => {});
+  } catch (err: any) {
+    await ctx.reply(`❌ Gagal memberikan izin: ${err?.message || 'Error internal'}`);
+  }
+});
+
+// Command: /cabut
+bot.command(['cabut', 'revoke'], async (ctx) => {
+  const senderId = String(ctx.from?.id);
+  const isAdmin = await isUserAdmin(senderId);
+  if (!isAdmin) {
+    await ctx.reply('⛔ Fitur ini hanya dapat diakses oleh Admin.');
+    return;
+  }
+
+  const text = ctx.message?.text || '';
+  const parts = text.split(' ').slice(1);
+  const targetId = parts[0]?.trim();
+
+  if (!targetId || !/^\d+$/.test(targetId)) {
+    await ctx.reply(
+      `💡 *Format Perintah:*\n\`/cabut <ID_Telegram>\`\n\nContoh: \`/cabut 12345678\``,
+      { parse_mode: 'Markdown' }
+    );
+    return;
+  }
+
+  try {
+    const success = await revokeUser(targetId);
+    if (success) {
+      await ctx.reply(`🚫 *Akses Berhasil Dicabut:* ID \`${targetId}\` tidak lagi dapat menggunakan bot ini.`, {
+        parse_mode: 'Markdown',
+      });
+      await ctx.api.sendMessage(
+        targetId,
+        `⚠️ *Pemberitahuan:*\nAkses Anda ke bot pencatat keuangan ini telah dicabut oleh Admin.`,
+        { parse_mode: 'Markdown' }
+      ).catch(() => {});
+    } else {
+      await ctx.reply(`⚠️ ID Telegram \`${targetId}\` tidak ditemukan dalam daftar anggota.`);
+    }
+  } catch (err: any) {
+    await ctx.reply(`❌ Gagal mencabut akses: ${err?.message || 'Error internal'}`);
   }
 });
 
@@ -1759,6 +2151,15 @@ bot.on('message:text', async (ctx) => {
       'aktifkananggota',
       'nota',
       'debug',
+      'akses',
+      'aksesbot',
+      'kelolaakses',
+      'invite',
+      'undang',
+      'izinkan',
+      'approve',
+      'cabut',
+      'revoke',
     ];
 
     if (!standardCmds.includes(rawCmd)) {
@@ -1815,6 +2216,18 @@ bot.on('message:text', async (ctx) => {
       return;
     }
 
+    const senderId = String(ctx.from?.id);
+    const senderName = ctx.from?.first_name || 'Pengguna';
+    const username = ctx.from?.username ? `@${ctx.from.username}` : '';
+    const adminId = getAdminTelegramId();
+    const isAdmin = senderId === adminId;
+
+    // Tag PIC di keterangan Google Sheets agar transparan siapa penginputnya
+    const picTag = username ? `(PIC: ${username})` : `(PIC: ${senderName})`;
+    if (!parsed.description.toLowerCase().includes('pic:')) {
+      parsed.description = `${parsed.description} ${picTag}`;
+    }
+
     // Simpan ke sheet buku yang sedang aktif
     await appendTransaction(parsed, activeBook);
 
@@ -1829,6 +2242,27 @@ bot.on('message:text', async (ctx) => {
         `📝 *Keterangan:* ${parsed.description}`,
       { parse_mode: 'Markdown' }
     );
+
+    // Monitoring realtime: Kirim alert ke Admin jika penginput adalah anggota (bukan Admin sendiri)
+    if (!isAdmin) {
+      (async () => {
+        try {
+          const alertMsg =
+            `🔔 *Pantauan Transaksi Anggota!*\n\n` +
+            `👤 *Penginput:* ${senderName} ${username ? `(${username})` : ''}\n` +
+            `🆔 *ID:* \`${senderId}\`\n` +
+            `📖 *Buku:* \`${activeBook}\`\n` +
+            `📅 *Tanggal:* ${parsed.date}\n` +
+            `${emoji} *Jenis:* ${parsed.type} (${formatRupiah(parsed.amount)})\n` +
+            `📂 *Kategori:* ${parsed.category}\n` +
+            `📝 *Keterangan:* ${parsed.description}`;
+
+          await ctx.api.sendMessage(adminId, alertMsg, { parse_mode: 'Markdown' });
+        } catch (adminErr) {
+          console.error('Gagal mengirim notifikasi pantauan transaksi ke Admin:', adminErr);
+        }
+      })();
+    }
 
     // Kirim rekap singkat di background
     (async () => {
@@ -1914,6 +2348,18 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
       return;
     }
 
+    const senderId = String(ctx.from?.id);
+    const senderName = ctx.from?.first_name || 'Pengguna';
+    const username = ctx.from?.username ? `@${ctx.from.username}` : '';
+    const adminId = getAdminTelegramId();
+    const isAdmin = senderId === adminId;
+
+    // Tag PIC di keterangan Google Sheets agar jelas siapa penginputnya
+    const picTag = username ? `(PIC: ${username})` : `(PIC: ${senderName})`;
+    if (!parsed.description.toLowerCase().includes('pic:')) {
+      parsed.description = `${parsed.description} ${picTag}`;
+    }
+
     // Simpan segera ke Google Sheets pada sheet buku yang aktif
     const rowNumber = await appendTransaction(parsed, activeBook);
 
@@ -1929,6 +2375,28 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
         `⏳ _Foto sedang diunggah ke Google Drive di latar belakang..._`,
       { parse_mode: 'Markdown' }
     );
+
+    // Monitoring realtime: Notifikasi ke Admin jika penginput adalah anggota
+    if (!isAdmin) {
+      (async () => {
+        try {
+          const alertMsg =
+            `🧾 *Pantauan Transaksi Nota Anggota!*\n\n` +
+            `👤 *Penginput:* ${senderName} ${username ? `(${username})` : ''}\n` +
+            `🆔 *ID:* \`${senderId}\`\n` +
+            `📖 *Buku:* \`${activeBook}\`\n` +
+            `📅 *Tanggal:* ${parsed.date}\n` +
+            `${emoji} *Jenis:* ${parsed.type} (${formatRupiah(parsed.amount)})\n` +
+            `📂 *Kategori:* ${parsed.category}\n` +
+            `📝 *Keterangan:* ${parsed.description}\n` +
+            `⏳ _Nota sedang diunggah ke Google Drive..._`;
+
+          await ctx.api.sendMessage(adminId, alertMsg, { parse_mode: 'Markdown' });
+        } catch (adminErr) {
+          console.error('Gagal mengirim notif awal nota anggota ke Admin:', adminErr);
+        }
+      })();
+    }
 
     // Upload ke Drive & rekap di latar belakang
     (async () => {
@@ -1962,6 +2430,19 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
               `🔗 [Buka Foto di Google Drive](${driveLink})`,
             { parse_mode: 'Markdown', link_preview_options: { is_disabled: true } }
           ).catch(console.error);
+
+          // Alert link nota ke Admin jika penginput adalah anggota
+          if (!isAdmin) {
+            ctx.api.sendMessage(
+              adminId,
+              `📎 *Foto Nota Anggota Berhasil Tersimpan!*\n\n` +
+                `👤 *Penginput:* ${senderName} ${username ? `(${username})` : ''}\n` +
+                `📖 *Buku:* \`${activeBook}\`\n` +
+                `📝 *Item:* ${parsed.description}\n` +
+                `🔗 [Lihat Foto Nota di Google Drive](${driveLink})`,
+              { parse_mode: 'Markdown', link_preview_options: { is_disabled: true } }
+            ).catch(console.error);
+          }
         } else {
           await ctx.reply(
             `⚠️ *Peringatan Google Drive:*\n` +

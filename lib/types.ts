@@ -69,3 +69,15 @@ export interface TransferBalanceResult {
   targetBalanceAfter: number;
   date: string;
 }
+
+export type UserRole = 'Admin' | 'Member';
+export type UserAccessStatus = 'Aktif' | 'Menunggu' | 'Ditolak' | 'Nonaktif';
+
+export interface UserAccessRecord {
+  id: string;
+  name: string;
+  username: string;
+  role: UserRole;
+  status: UserAccessStatus;
+  addedAt: string;
+}
