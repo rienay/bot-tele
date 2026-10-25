@@ -1,6 +1,16 @@
 import { google } from 'googleapis';
 import { getGoogleAuth } from './googleAuth';
-import { ParsedTransaction, SummaryReport, GlobalSummaryReport, BookSummary, ExpenseDetail, TransferBalanceParams, TransferBalanceResult } from './types';
+import {
+  ParsedTransaction,
+  SummaryReport,
+  GlobalSummaryReport,
+  BookSummary,
+  ExpenseDetail,
+  TransferBalanceParams,
+  TransferBalanceResult,
+  WebFinanceData,
+  WebTransactionItem,
+} from './types';
 
 export const DEFAULT_BOOK_NAME = 'Kas';
 
@@ -705,3 +715,137 @@ export async function transferBookBalance(
     date: todayStr,
   };
 }
+
+// In-memory cache untuk transaksi web (key: bookName, value: { data: WebFinanceData, timestamp: number })
+const webFinanceCache = new Map<string, { data: WebFinanceData; timestamp: number }>();
+const WEB_CACHE_TTL_MS = 20_000; // 20 detik
+
+/**
+ * Mengambil seluruh data transaksi dan agregasi statistik untuk ditampilkan di Website Dashboard Keuangan
+ */
+export async function getAllTransactionsForWeb(targetBook: string = 'Semua'): Promise<WebFinanceData> {
+  const normalizedTarget = targetBook.trim().toLowerCase();
+  const now = Date.now();
+  const cacheKey = normalizedTarget;
+
+  const cached = webFinanceCache.get(cacheKey);
+  if (cached && now - cached.timestamp < WEB_CACHE_TTL_MS) {
+    return cached.data;
+  }
+
+  const books = await getAllSheetBooks();
+  const auth = getGoogleAuth();
+  const sheets = google.sheets({ version: 'v4', auth });
+  const spreadsheetId = getSpreadsheetId();
+
+  const isAll = normalizedTarget === 'semua' || normalizedTarget === 'all' || normalizedTarget === '';
+  const booksToFetch = isAll
+    ? books
+    : books.filter((b) => b.toLowerCase() === normalizedTarget);
+
+  const fetchPromises = booksToFetch.map(async (book) => {
+    try {
+      const res = await sheets.spreadsheets.values.get({
+        spreadsheetId,
+        range: `'${book}'!A2:G`,
+      });
+      return { book, rows: res.data.values || [] };
+    } catch (e) {
+      console.warn(`Gagal fetch transactions untuk web dari ${book}:`, e);
+      return { book, rows: [] };
+    }
+  });
+
+  const results = await Promise.all(fetchPromises);
+
+  const allItems: WebTransactionItem[] = [];
+  let totalPemasukan = 0;
+  let totalPengeluaran = 0;
+  const categoryExpenses: Record<string, number> = {};
+  const categoryIncome: Record<string, number> = {};
+
+  let globalId = 1;
+
+  for (const { book, rows } of results) {
+    for (let rIdx = 0; rIdx < rows.length; rIdx++) {
+      const row = rows[rIdx];
+      const [tglRaw, jenisRaw, katRaw, nominalRaw, keteranganRaw, noteLinkRaw, waktuRaw] = row;
+      if (!tglRaw || !nominalRaw) continue;
+
+      const cleanNominal =
+        typeof nominalRaw === 'number'
+          ? nominalRaw
+          : parseFloat(String(nominalRaw).replace(/[^0-9.-]+/g, '')) || 0;
+
+      if (cleanNominal <= 0) continue;
+
+      const jenis = String(jenisRaw || '').toLowerCase().includes('pemasukan')
+        ? ('Pemasukan' as const)
+        : ('Pengeluaran' as const);
+
+      const kategori = katRaw ? String(katRaw).trim() : 'Lain-lain';
+      const keterangan = keteranganRaw ? String(keteranganRaw).trim() : '';
+      const cleanDate = String(tglRaw).trim().replace(/^'/, '');
+      const noteLink = noteLinkRaw && String(noteLinkRaw).startsWith('http') ? String(noteLinkRaw).trim() : undefined;
+      const inputTime = waktuRaw ? String(waktuRaw).trim() : undefined;
+
+      // Ekstrak PIC jika ada di keterangan, e.g. (PIC: @username) atau (PIC: nama)
+      let pic: string | undefined;
+      const picMatch = keterangan.match(/[\(\[]\s*PIC\s*:\s*([^\]\)]+)[\)\]]/i);
+      if (picMatch) {
+        pic = picMatch[1].trim();
+      }
+
+      if (jenis === 'Pemasukan') {
+        totalPemasukan += cleanNominal;
+        categoryIncome[kategori] = (categoryIncome[kategori] || 0) + cleanNominal;
+      } else {
+        totalPengeluaran += cleanNominal;
+        categoryExpenses[kategori] = (categoryExpenses[kategori] || 0) + cleanNominal;
+      }
+
+      allItems.push({
+        id: `${book}-${rIdx + 2}-${globalId++}`,
+        book,
+        date: cleanDate,
+        type: jenis,
+        category: kategori,
+        amount: cleanNominal,
+        description: keterangan,
+        noteLink,
+        pic,
+        inputTime,
+      });
+    }
+  }
+
+  // Urutkan transaksi dari tanggal terbaru ke terlama
+  allItems.sort((a, b) => {
+    return b.date.localeCompare(a.date);
+  });
+
+  const nowJakarta = new Intl.DateTimeFormat('id-ID', {
+    timeZone: 'Asia/Jakarta',
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(new Date());
+
+  const data: WebFinanceData = {
+    books: ['Semua', ...books],
+    activeBook: isAll ? 'Semua' : (books.find((b) => b.toLowerCase() === normalizedTarget) || 'Semua'),
+    transactions: allItems,
+    stats: {
+      totalPemasukan,
+      totalPengeluaran,
+      saldo: totalPemasukan - totalPengeluaran,
+      count: allItems.length,
+      categoryExpenses,
+      categoryIncome,
+    },
+    lastUpdated: nowJakarta,
+  };
+
+  webFinanceCache.set(cacheKey, { data, timestamp: now });
+  return data;
+}
+

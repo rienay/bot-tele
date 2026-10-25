@@ -2,8 +2,8 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'Catat Keuangan Telegram Bot Dashboard',
-  description: 'Asisten pencatatan keuangan otomatis via Telegram, Google Sheets, Drive, dan Gemini AI',
+  title: '🌸 Dashboard Keuangan DKC - Transparan & Realtime',
+  description: 'Portal akses catatan keuangan terbuka: pantau saldo kas, pemasukan, pengeluaran, dan bukti struk nota kegiatan DKC.',
 };
 
 export default function RootLayout({

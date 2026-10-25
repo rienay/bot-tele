@@ -122,6 +122,7 @@ async function syncBotCommands(api: any) {
       { command: 'anggota', description: 'Daftar & kelola anggota kas' },
       { command: 'akses', description: 'Kelola hak akses & anggota bot' },
       { command: 'invite', description: 'Cara undang anggota baru' },
+      { command: 'linkuang', description: 'Link website keuangan transparan' },
     ];
 
     // Tambahkan command untuk buku kegiatan yang valid (hanya huruf, angka, underscore)
@@ -294,6 +295,8 @@ bot.command(['start', 'help'], async (ctx) => {
       `• /cekkas — *Cek Pembayaran Kas* (siapa yang lunas & belum)\n` +
       `• /bayarkas — *Catat Bayar Kas Anggota* (otomatis masuk ke Kas)\n` +
       `• /anggota — *Kelola Anggota* (daftar, tambah, nonaktifkan)\n\n` +
+      `🌸 *Website Dashboard Keuangan:*\n` +
+      `• /linkuang — *Buka Link Web Keuangan* (tampilan pastel & transparan)\n\n` +
       adminMenuText +
       `📚 *Buku Kegiatan Tersedia:*\n` +
       `${booksListText}\n` +
@@ -685,6 +688,24 @@ bot.command(['cabut', 'revoke'], async (ctx) => {
   } catch (err: any) {
     await ctx.reply(`❌ Gagal mencabut akses: ${err?.message || 'Error internal'}`);
   }
+});
+
+// Command: /linkuang (Link website keuangan transparan)
+bot.command(['linkuang', 'linkweb', 'dashboard', 'website'], async (ctx) => {
+  const webUrl = 'https://bot-tele-topaz.vercel.app';
+  const keyboard = new InlineKeyboard().url('🌸 Buka Website Keuangan', webUrl);
+
+  await ctx.reply(
+    `🌸 *Website Catatan Keuangan Transparan*\n\n` +
+      `Sekarang seluruh panitia & anggota dapat melihat laporan saldo kas, rincian pengeluaran tiap kegiatan, dan bukti struk nota secara asik, rapi, dan mudah dipahami:\n\n` +
+      `👉 [${webUrl}](${webUrl})\n\n` +
+      `💡 *Catatan:* Menulis pemasukan/pengeluaran & upload foto nota tetap dilakukan lewat chat bot ini ya! Website tersebut berfungsi khusus untuk melihat & memantau laporan secara terbuka. ✨`,
+    {
+      parse_mode: 'Markdown',
+      reply_markup: keyboard,
+      link_preview_options: { is_disabled: false },
+    }
+  );
 });
 
 // ============================================================
@@ -2160,6 +2181,10 @@ bot.on('message:text', async (ctx) => {
       'approve',
       'cabut',
       'revoke',
+      'linkuang',
+      'linkweb',
+      'dashboard',
+      'website',
     ];
 
     if (!standardCmds.includes(rawCmd)) {
