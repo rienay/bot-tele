@@ -14,7 +14,8 @@ Didesain untuk dideploy **100% GRATIS** ke **Vercel** via Serverless Webhook.
    - Transaksi tersusun rapi di tabel **Google Sheets**.
    - Foto nota tersimpan di folder **Google Drive** dan tautan link-nya dicantumkan di baris transaksi.
 4. **Perintah /rekap:** Menampilkan ringkasan total pemasukan, total pengeluaran, dan sisa saldo bulan ini.
-5. **Privat & Aman:** Dilengkapi filter `ALLOWED_TELEGRAM_USER_IDS` sehingga hanya Anda yang bisa menggunakan bot ini.
+5. **Pindah Saldo (/pindahsaldo):** Memindahkan sisa anggaran kegiatan yang sudah selesai ke Kas Utama atau buku kegiatan lain (bisa pindah 100% saldo atau nominal tertentu).
+6. **Privat & Aman:** Dilengkapi filter `ALLOWED_TELEGRAM_USER_IDS` sehingga hanya Anda yang bisa menggunakan bot ini.
 
 ---
 

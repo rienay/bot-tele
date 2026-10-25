@@ -13,6 +13,7 @@ import {
   getAllSheetsSummary,
   DEFAULT_BOOK_NAME,
   sanitizeBookName,
+  transferBookBalance,
 } from './googleSheets';
 import {
   getDaftarAnggota,
@@ -52,6 +53,20 @@ const MAX_DEDUP_CACHE = 500; // batas agar memori tidak bocor
 const createBookStates = new Map<number, boolean>();
 
 // ============================================================
+// STATE MACHINE: Percakapan multi-step untuk /pindahsaldo
+// ============================================================
+type TransferStep = 'select_source' | 'select_target' | 'select_amount' | 'input_amount' | 'confirm';
+interface TransferState {
+  step: TransferStep;
+  books?: { bookName: string; saldo: number }[];
+  sourceBook?: string;
+  sourceBalance?: number;
+  targetBook?: string;
+  amount?: number;
+}
+const transferStates = new Map<number, TransferState>();
+
+// ============================================================
 // STATE MACHINE: Percakapan multi-step untuk /nota
 // ============================================================
 type NotaStep = 'invoice_no' | 'tanggal' | 'nama' | 'alamat' | 'catatan' | 'items';
@@ -86,6 +101,7 @@ async function syncBotCommands(api: any) {
     const baseCommands = [
       { command: 'start', description: 'Panduan & menu utama' },
       { command: 'buat', description: 'Buat catatan/buku kegiatan baru' },
+      { command: 'pindahsaldo', description: 'Pindah saldo antar buku/kegiatan' },
       { command: 'rekap', description: 'Rekap buku kegiatan aktif' },
       { command: 'rekapkas', description: 'Rekap seluruh kas & kegiatan' },
       { command: 'kas', description: 'Beralih ke buku Kas Utama' },
@@ -181,6 +197,7 @@ bot.command(['start', 'help'], async (ctx) => {
       `_(Semua chat transaksi & struk nota akan dicatat ke buku ini)_\n\n` +
       `⚙️ *Menu Pembukuan & Rekap:*\n` +
       `• /buat — *Buat Catatan/Buku Baru* (tab baru Sheets)\n` +
+      `• /pindahsaldo — *Pindah Saldo* (sisa kegiatan ke Kas/lainnya)\n` +
       `• /rekap — *Rekap Buku Aktif* (\`${activeBook}\`)\n` +
       `• /rekapkas — *Rekap Seluruh Kas* (semua kegiatan + kas)\n` +
       `• /kas — Beralih ke Buku *Kas Utama*\n` +
@@ -207,6 +224,7 @@ bot.command('buat', async (ctx) => {
   const chatId = ctx.chat.id;
   createBookStates.set(chatId, true);
   notaStates.delete(chatId);
+  transferStates.delete(chatId);
 
   await ctx.reply(
     `📝 *Buat Catatan / Buku Kegiatan Baru*\n\n` +
@@ -274,6 +292,442 @@ bot.callbackQuery(/^switch_book:(.+)$/, async (ctx) => {
     );
   } catch {
     // Abaikan jika tidak bisa edit pesan
+  }
+});
+
+// ============================================================
+// LOGIKA & HANDLER PINDAH SALDO ANTAR BUKU / KEGIATAN
+// ============================================================
+
+// Helper: Parse nominal uang dari teks fleksibel (misal: 50000, 50rb, 50k, 1.5jt, Rp 250.000)
+function parseNominalInput(text: string): number | null {
+  const clean = text.trim().toLowerCase().replace(/^rp\.?\s*/i, '').trim();
+  const rbMatch = clean.match(/^([\d.,]+)\s*(rb|ribu|k)$/i);
+  if (rbMatch) {
+    const num = parseFloat(rbMatch[1].replace(/\./g, '').replace(/,/g, '.'));
+    return isNaN(num) ? null : Math.round(num * 1000);
+  }
+  const jtMatch = clean.match(/^([\d.,]+)\s*(jt|juta|m)$/i);
+  if (jtMatch) {
+    const num = parseFloat(jtMatch[1].replace(/\./g, '').replace(/,/g, '.'));
+    return isNaN(num) ? null : Math.round(num * 1000000);
+  }
+  const plain = clean.replace(/\./g, '').replace(/,/g, '');
+  if (/^\d+$/.test(plain)) {
+    const num = parseInt(plain, 10);
+    return isNaN(num) ? null : num;
+  }
+  return null;
+}
+
+function buildTransferSourceKeyboard(books: { bookName: string; saldo: number }[]): InlineKeyboard {
+  const keyboard = new InlineKeyboard();
+  books.forEach((b, idx) => {
+    const isPositive = b.saldo > 0;
+    const icon = isPositive ? '💰' : '⚪';
+    const label = `${icon} ${b.bookName} (${formatRupiah(b.saldo)})`;
+    keyboard.text(label, `ps_src:${idx}`);
+    keyboard.row();
+  });
+  keyboard.text('❌ Batal', 'ps_cancel');
+  return keyboard;
+}
+
+function buildTransferTargetKeyboard(
+  books: { bookName: string; saldo: number }[],
+  sourceBook: string
+): InlineKeyboard {
+  const keyboard = new InlineKeyboard();
+  const targetBooks = books.filter((b) => b.bookName.toLowerCase() !== sourceBook.toLowerCase());
+  targetBooks.forEach((b) => {
+    const isKas = b.bookName.toLowerCase() === DEFAULT_BOOK_NAME.toLowerCase();
+    const icon = isKas ? '📌' : '📖';
+    const label = `${icon} ${b.bookName} (Saldo: ${formatRupiah(b.saldo)})`;
+    const origIdx = books.findIndex((x) => x.bookName.toLowerCase() === b.bookName.toLowerCase());
+    keyboard.text(label, `ps_dst:${origIdx}`);
+    keyboard.row();
+  });
+  keyboard.text('🔙 Kembali', 'ps_back_src').text('❌ Batal', 'ps_cancel');
+  return keyboard;
+}
+
+function buildTransferAmountKeyboard(sourceBalance: number): InlineKeyboard {
+  const keyboard = new InlineKeyboard();
+  keyboard.text(`⚡ Pindah Semua (${formatRupiah(sourceBalance)})`, 'ps_amt:all').row();
+  keyboard.text('✏️ Masukkan Nominal Tertentu', 'ps_amt:custom').row();
+  keyboard.text('🔙 Kembali', 'ps_back_dst').text('❌ Batal', 'ps_cancel');
+  return keyboard;
+}
+
+function buildTransferConfirmKeyboard(): InlineKeyboard {
+  const keyboard = new InlineKeyboard();
+  keyboard.text('✅ Ya, Pindahkan Sekarang', 'ps_exec').row();
+  keyboard.text('❌ Batal', 'ps_cancel');
+  return keyboard;
+}
+
+async function handleStartPindahSaldo(ctx: any, argsText: string = '') {
+  const chatId = ctx.chat.id;
+  await ctx.replyWithChatAction('typing');
+
+  createBookStates.delete(chatId);
+  notaStates.delete(chatId);
+  transferStates.delete(chatId);
+
+  const summary = await getAllSheetsSummary();
+  const books = summary.books.map((b) => ({ bookName: b.bookName, saldo: b.saldo }));
+
+  if (books.length < 2) {
+    await ctx.reply(
+      '⚠️ *Tidak Ada Buku Lain*\n\n' +
+        'Fitur pindah saldo membutuhkan minimal 2 buku/kegiatan. Buat kegiatan baru dengan /buat terlebih dahulu.',
+      { parse_mode: 'Markdown' }
+    );
+    return;
+  }
+
+  const cleanArgs = argsText.trim();
+  if (cleanArgs) {
+    // Mode command cepat: /pindahsaldo [asal] [ke?] [tujuan] [nominal?]
+    // contoh: /pindahsaldo jojo kas 50000 atau /pindahsaldo jojo ke kas
+    const tokens = cleanArgs.split(/\s+/).filter((t) => t.toLowerCase() !== 'ke');
+    if (tokens.length >= 2) {
+      const srcQuery = tokens[0].toLowerCase();
+      const dstQuery = tokens[1].toLowerCase();
+      const nominalStr = tokens.slice(2).join(' ').trim();
+
+      const matchedSrc = books.find(
+        (b) =>
+          b.bookName.toLowerCase() === srcQuery ||
+          b.bookName.toLowerCase().replace(/[^a-z0-9_]/g, '') === srcQuery
+      );
+      const matchedDst = books.find(
+        (b) =>
+          b.bookName.toLowerCase() === dstQuery ||
+          b.bookName.toLowerCase().replace(/[^a-z0-9_]/g, '') === dstQuery
+      );
+
+      if (matchedSrc && matchedDst) {
+        if (matchedSrc.bookName.toLowerCase() === matchedDst.bookName.toLowerCase()) {
+          await ctx.reply('⚠️ Buku asal dan buku tujuan tidak boleh sama.');
+          return;
+        }
+
+        if (matchedSrc.saldo <= 0) {
+          await ctx.reply(
+            `⚠️ Buku *${matchedSrc.bookName}* tidak memiliki sisa saldo (Saldo: ${formatRupiah(matchedSrc.saldo)}). Tidak ada saldo yang dapat dipindahkan.`,
+            { parse_mode: 'Markdown' }
+          );
+          return;
+        }
+
+        let amount = matchedSrc.saldo;
+        if (nominalStr) {
+          const parsedNominal = parseNominalInput(nominalStr);
+          if (!parsedNominal || parsedNominal <= 0) {
+            await ctx.reply('⚠️ Format nominal tidak valid. Contoh: `/pindahsaldo jojo kas 50000`', {
+              parse_mode: 'Markdown',
+            });
+            return;
+          }
+          if (parsedNominal > matchedSrc.saldo) {
+            await ctx.reply(
+              `⚠️ Saldo buku *${matchedSrc.bookName}* hanya tersisa ${formatRupiah(matchedSrc.saldo)}. Nominal ${formatRupiah(parsedNominal)} melebihi saldo tersedia.`,
+              { parse_mode: 'Markdown' }
+            );
+            return;
+          }
+          amount = parsedNominal;
+        }
+
+        transferStates.set(chatId, {
+          step: 'confirm',
+          books,
+          sourceBook: matchedSrc.bookName,
+          sourceBalance: matchedSrc.saldo,
+          targetBook: matchedDst.bookName,
+          amount,
+        });
+
+        const isAll = amount === matchedSrc.saldo;
+        await ctx.reply(
+          `⚠️ *Konfirmasi Pemindahan Saldo*\n\n` +
+            `📤 *Dari:* \`${matchedSrc.bookName}\`\n` +
+            `📥 *Ke:* \`${matchedDst.bookName}\`\n` +
+            `💰 *Nominal:* *${formatRupiah(amount)}* ${isAll ? '_(Semua Saldo)_' : ''}\n\n` +
+            `ℹ️ _Saldo di buku \`${matchedSrc.bookName}\` setelah ini akan menjadi *${formatRupiah(matchedSrc.saldo - amount)}*._\n\n` +
+            `Apakah Anda yakin ingin memindahkan saldo ini?`,
+          {
+            parse_mode: 'Markdown',
+            reply_markup: buildTransferConfirmKeyboard(),
+          }
+        );
+        return;
+      }
+    }
+  }
+
+  // Tampilkan pilihan buku asal
+  transferStates.set(chatId, {
+    step: 'select_source',
+    books,
+  });
+
+  const keyboard = buildTransferSourceKeyboard(books);
+  await ctx.reply(
+    `🔄 *Pindah Saldo Antar Buku / Kegiatan*\n\n` +
+      `Fitur ini untuk memindahkan sisa anggaran/saldo dari kegiatan yang sudah selesai ke *Kas Utama* atau buku kegiatan lainnya.\n\n` +
+      `Silakan pilih *Buku Asal* (sumber dana yang ingin dipindahkan):`,
+    {
+      parse_mode: 'Markdown',
+      reply_markup: keyboard,
+    }
+  );
+}
+
+// Callback: Pilih buku asal pindah saldo
+bot.callbackQuery(/^ps_src:(\d+)$/, async (ctx) => {
+  const chatId = ctx.chat?.id;
+  if (!chatId) return;
+
+  const idx = parseInt(ctx.match[1], 10);
+  const state = transferStates.get(chatId);
+  if (!state || !state.books || !state.books[idx]) {
+    await ctx.answerCallbackQuery({ text: 'Sesi telah kedaluwarsa. Silakan ketik /pindahsaldo kembali.', show_alert: true });
+    return;
+  }
+
+  const source = state.books[idx];
+  if (source.saldo <= 0) {
+    await ctx.answerCallbackQuery({
+      text: `Buku "${source.bookName}" tidak memiliki saldo (${formatRupiah(source.saldo)}). Silakan pilih buku lain.`,
+      show_alert: true,
+    });
+    return;
+  }
+
+  state.step = 'select_target';
+  state.sourceBook = source.bookName;
+  state.sourceBalance = source.saldo;
+
+  await ctx.answerCallbackQuery();
+  const keyboard = buildTransferTargetKeyboard(state.books, source.bookName);
+
+  try {
+    await ctx.editMessageText(
+      `🔄 *Pindah Saldo Antar Buku*\n\n` +
+        `📤 *Buku Asal:* \`${source.bookName}\`\n` +
+        `💰 *Sisa Saldo:* *${formatRupiah(source.saldo)}*\n\n` +
+        `Silakan pilih *Buku Tujuan* (kemana saldo akan dipindahkan):`,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: keyboard,
+      }
+    );
+  } catch {}
+});
+
+// Callback: Pilih buku tujuan pindah saldo
+bot.callbackQuery(/^ps_dst:(\d+)$/, async (ctx) => {
+  const chatId = ctx.chat?.id;
+  if (!chatId) return;
+
+  const idx = parseInt(ctx.match[1], 10);
+  const state = transferStates.get(chatId);
+  if (!state || !state.books || !state.books[idx] || state.sourceBalance === undefined) {
+    await ctx.answerCallbackQuery({ text: 'Sesi telah kedaluwarsa. Silakan ketik /pindahsaldo kembali.', show_alert: true });
+    return;
+  }
+
+  const target = state.books[idx];
+  state.step = 'select_amount';
+  state.targetBook = target.bookName;
+
+  await ctx.answerCallbackQuery();
+  const keyboard = buildTransferAmountKeyboard(state.sourceBalance);
+
+  try {
+    await ctx.editMessageText(
+      `🔄 *Pindah Saldo Antar Buku*\n\n` +
+        `📤 *Buku Asal:* \`${state.sourceBook}\`\n` +
+        `📥 *Buku Tujuan:* \`${state.targetBook}\`\n` +
+        `💰 *Sisa Saldo Tersedia:* *${formatRupiah(state.sourceBalance)}*\n\n` +
+        `Berapa saldo yang ingin dipindahkan ke \`${state.targetBook}\`?`,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: keyboard,
+      }
+    );
+  } catch {}
+});
+
+// Callback: Pilihan nominal pindah saldo (semua / nominal tertentu)
+bot.callbackQuery(/^ps_amt:(all|custom)$/, async (ctx) => {
+  const chatId = ctx.chat?.id;
+  if (!chatId) return;
+
+  const mode = ctx.match[1];
+  const state = transferStates.get(chatId);
+  if (!state || !state.sourceBook || !state.targetBook || state.sourceBalance === undefined) {
+    await ctx.answerCallbackQuery({ text: 'Sesi telah kedaluwarsa. Silakan ketik /pindahsaldo kembali.', show_alert: true });
+    return;
+  }
+
+  if (mode === 'all') {
+    state.amount = state.sourceBalance;
+    state.step = 'confirm';
+
+    await ctx.answerCallbackQuery();
+    const keyboard = buildTransferConfirmKeyboard();
+
+    try {
+      await ctx.editMessageText(
+        `⚠️ *Konfirmasi Pemindahan Seluruh Saldo*\n\n` +
+          `Apakah Anda yakin ingin memindahkan seluruh sisa saldo?\n\n` +
+          `📤 *Dari:* \`${state.sourceBook}\`\n` +
+          `📥 *Ke:* \`${state.targetBook}\`\n` +
+          `💰 *Nominal:* *${formatRupiah(state.amount)}* _(100% Saldo)_\n\n` +
+          `ℹ️ _Saldo di buku \`${state.sourceBook}\` akan menjadi *Rp 0* setelah proses ini._`,
+        {
+          parse_mode: 'Markdown',
+          reply_markup: keyboard,
+        }
+      );
+    } catch {}
+  } else {
+    state.step = 'input_amount';
+    await ctx.answerCallbackQuery();
+
+    const cancelKeyboard = new InlineKeyboard().text('❌ Batal', 'ps_cancel');
+    try {
+      await ctx.editMessageText(
+        `✏️ *Masukkan Nominal Saldo*\n\n` +
+          `📤 *Buku Asal:* \`${state.sourceBook}\` (Sisa: ${formatRupiah(state.sourceBalance)})\n` +
+          `📥 *Buku Tujuan:* \`${state.targetBook}\`\n\n` +
+          `Silakan ketik nominal yang ingin dipindahkan di chat:\n` +
+          `_(Contoh: \`50000\`, \`75rb\`, atau \`100.000\`)_\n\n` +
+          `_Ketik *batal* jika ingin membatalkan._`,
+        {
+          parse_mode: 'Markdown',
+          reply_markup: cancelKeyboard,
+        }
+      );
+    } catch {}
+  }
+});
+
+// Callback: Kembali ke pilihan buku asal
+bot.callbackQuery('ps_back_src', async (ctx) => {
+  const chatId = ctx.chat?.id;
+  if (!chatId) return;
+
+  const state = transferStates.get(chatId);
+  if (!state || !state.books) return;
+
+  state.step = 'select_source';
+  await ctx.answerCallbackQuery();
+  const keyboard = buildTransferSourceKeyboard(state.books);
+
+  try {
+    await ctx.editMessageText(
+      `🔄 *Pindah Saldo Antar Buku / Kegiatan*\n\n` +
+        `Silakan pilih *Buku Asal* (sumber dana yang ingin dipindahkan):`,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: keyboard,
+      }
+    );
+  } catch {}
+});
+
+// Callback: Kembali ke pilihan buku tujuan
+bot.callbackQuery('ps_back_dst', async (ctx) => {
+  const chatId = ctx.chat?.id;
+  if (!chatId) return;
+
+  const state = transferStates.get(chatId);
+  if (!state || !state.books || !state.sourceBook || state.sourceBalance === undefined) return;
+
+  state.step = 'select_target';
+  await ctx.answerCallbackQuery();
+  const keyboard = buildTransferTargetKeyboard(state.books, state.sourceBook);
+
+  try {
+    await ctx.editMessageText(
+      `🔄 *Pindah Saldo Antar Buku*\n\n` +
+        `📤 *Buku Asal:* \`${state.sourceBook}\`\n` +
+        `💰 *Sisa Saldo:* *${formatRupiah(state.sourceBalance)}*\n\n` +
+        `Silakan pilih *Buku Tujuan* (kemana saldo akan dipindahkan):`,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: keyboard,
+      }
+    );
+  } catch {}
+});
+
+// Callback: Batalkan pindah saldo
+bot.callbackQuery('ps_cancel', async (ctx) => {
+  const chatId = ctx.chat?.id;
+  if (chatId) transferStates.delete(chatId);
+
+  await ctx.answerCallbackQuery({ text: 'Pemindahan saldo dibatalkan.' });
+  try {
+    await ctx.editMessageText('❌ *Pemindahan saldo dibatalkan.*', { parse_mode: 'Markdown' });
+  } catch {}
+});
+
+// Callback: Eksekusi pindah saldo
+bot.callbackQuery('ps_exec', async (ctx) => {
+  const chatId = ctx.chat?.id;
+  if (!chatId) return;
+
+  const state = transferStates.get(chatId);
+  if (!state || !state.sourceBook || !state.targetBook || !state.amount) {
+    await ctx.answerCallbackQuery({ text: 'Sesi telah kedaluwarsa. Silakan ketik /pindahsaldo kembali.', show_alert: true });
+    return;
+  }
+
+  await ctx.answerCallbackQuery({ text: 'Memproses pindah saldo...' });
+  try {
+    await ctx.editMessageText('⏳ _Sedang memproses pemindahan saldo di Google Sheets..._', {
+      parse_mode: 'Markdown',
+    });
+  } catch {}
+
+  try {
+    const result = await transferBookBalance({
+      sourceBook: state.sourceBook,
+      targetBook: state.targetBook,
+      amount: state.amount,
+    });
+
+    transferStates.delete(chatId);
+
+    await ctx.editMessageText(
+      `🎉 *Pindah Saldo Berhasil!*\n\n` +
+        `📤 *Buku Asal:* \`${result.sourceBook}\`\n` +
+        `• Saldo Sebelumnya: ${formatRupiah(result.sourceBalanceBefore)}\n` +
+        `• Saldo Sekarang: *${formatRupiah(result.sourceBalanceAfter)}*\n\n` +
+        `📥 *Buku Tujuan:* \`${result.targetBook}\`\n` +
+        `• Saldo Sebelumnya: ${formatRupiah(result.targetBalanceBefore)}\n` +
+        `• Saldo Sekarang: *${formatRupiah(result.targetBalanceAfter)}*\n\n` +
+        `💰 *Nominal Dipindahkan:* *${formatRupiah(result.amount)}*\n` +
+        `📅 *Tanggal:* ${result.date}\n\n` +
+        `━━━━━━━━━━━━━━━━━━━━━\n` +
+        `✅ Dicatat sebagai *Pengeluaran* di \`${result.sourceBook}\`\n` +
+        `✅ Dicatat sebagai *Pemasukan* di \`${result.targetBook}\``,
+      { parse_mode: 'Markdown' }
+    );
+  } catch (err: any) {
+    console.error('Error saat transfer saldo:', err);
+    try {
+      await ctx.editMessageText(`❌ *Gagal memindahkan saldo:* ${err.message}`, {
+        parse_mode: 'Markdown',
+      });
+    } catch {
+      await ctx.reply(`❌ *Gagal memindahkan saldo:* ${err.message}`, { parse_mode: 'Markdown' });
+    }
   }
 });
 
@@ -936,12 +1390,20 @@ bot.command('aktifkananggota', async (ctx) => {
   await handleAktifkanAnggota(ctx, parts);
 });
 
+// Command: /pindahsaldo (dan alias)
+bot.command(['pindahsaldo', 'transfersaldo', 'pindah', 'transfer'], async (ctx) => {
+  const text = ctx.message?.text || '';
+  const parts = text.split(' ').slice(1).join(' ').trim();
+  await handleStartPindahSaldo(ctx, parts);
+});
+
 // ============================================================
 // Command: /nota — mulai percakapan buat nota
 // ============================================================
 bot.command('nota', async (ctx) => {
   const chatId = ctx.chat.id;
   createBookStates.delete(chatId);
+  transferStates.delete(chatId);
   notaStates.set(chatId, { step: 'invoice_no', data: { items: [] } });
   await ctx.reply(
     `📋 *Buat Nota AJP*\n\n` +
@@ -1148,8 +1610,66 @@ bot.on('message:text', async (ctx) => {
     return;
   }
 
-  // === 3. Deteksi Perintah Cepat Kas Anggota Berbasis Teks Bebas ===
+  // === 3. Cek apakah pengguna sedang dalam proses input nominal /pindahsaldo ===
+  const tState = transferStates.get(chatId);
+  if (tState && tState.step === 'input_amount') {
+    if (text.toLowerCase() === 'batal' || text === '/batal') {
+      transferStates.delete(chatId);
+      await ctx.reply('❌ Pemindahan saldo dibatalkan.');
+      return;
+    }
+
+    const nominal = parseNominalInput(text);
+    if (!nominal || nominal <= 0) {
+      await ctx.reply(
+        '⚠️ Format nominal tidak valid.\n' +
+          'Silakan masukkan angka nominal (contoh: `50000` atau `75rb`), atau ketik *batal*:',
+        { parse_mode: 'Markdown' }
+      );
+      return;
+    }
+
+    if (nominal > tState.sourceBalance!) {
+      await ctx.reply(
+        `⚠️ Nominal melebihi saldo tersedia!\n` +
+          `Sisa saldo di buku *${tState.sourceBook}* hanya *${formatRupiah(tState.sourceBalance!)}*.\n` +
+          `Silakan masukkan nominal yang tidak melebihi sisa saldo, atau ketik *batal*:`,
+        { parse_mode: 'Markdown' }
+      );
+      return;
+    }
+
+    tState.amount = nominal;
+    tState.step = 'confirm';
+
+    await ctx.reply(
+      `⚠️ *Konfirmasi Pemindahan Saldo*\n\n` +
+        `📤 *Dari:* \`${tState.sourceBook}\`\n` +
+        `📥 *Ke:* \`${tState.targetBook}\`\n` +
+        `💰 *Nominal:* *${formatRupiah(tState.amount)}*\n\n` +
+        `ℹ️ _Saldo di buku \`${tState.sourceBook}\` akan tersisa *${formatRupiah(tState.sourceBalance! - tState.amount)}*._\n\n` +
+        `Apakah Anda ingin melanjutkan pemindahan?`,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: buildTransferConfirmKeyboard(),
+      }
+    );
+    return;
+  }
+
+  // === 4. Deteksi Perintah Cepat Kas Anggota & Pindah Saldo Berbasis Teks Bebas ===
   const textLower = text.toLowerCase();
+
+  if (
+    textLower.startsWith('pindah saldo') ||
+    textLower.startsWith('pindahsaldo') ||
+    textLower.startsWith('transfer saldo') ||
+    textLower.startsWith('transfersaldo')
+  ) {
+    const q = text.replace(/^(pindah\s*saldo|pindahsaldo|transfer\s*saldo|transfersaldo)/i, '').trim();
+    await handleStartPindahSaldo(ctx, q);
+    return;
+  }
 
   if (textLower.startsWith('cek kas') || textLower.startsWith('cekkas')) {
     const q = text.replace(/^(cek\s*kas|cekkas)/i, '').trim();
@@ -1220,6 +1740,10 @@ bot.on('message:text', async (ctx) => {
       'start',
       'help',
       'buat',
+      'pindahsaldo',
+      'transfersaldo',
+      'pindah',
+      'transfer',
       'kas',
       'buku',
       'rekap',

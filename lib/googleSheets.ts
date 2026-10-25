@@ -1,6 +1,6 @@
 import { google } from 'googleapis';
 import { getGoogleAuth } from './googleAuth';
-import { ParsedTransaction, SummaryReport, GlobalSummaryReport, BookSummary, ExpenseDetail } from './types';
+import { ParsedTransaction, SummaryReport, GlobalSummaryReport, BookSummary, ExpenseDetail, TransferBalanceParams, TransferBalanceResult } from './types';
 
 export const DEFAULT_BOOK_NAME = 'Kas';
 
@@ -607,5 +607,101 @@ export async function getAllSheetsSummary(
     categoryExpenses,
     categoryIncome,
     books: booksSummary,
+  };
+}
+
+/**
+ * Memindahkan saldo dari satu buku/kegiatan ke buku lainnya.
+ * Mencatat 'Pengeluaran' pada buku asal dan 'Pemasukan' pada buku tujuan.
+ */
+export async function transferBookBalance(
+  params: TransferBalanceParams
+): Promise<TransferBalanceResult> {
+  const cleanSource = sanitizeBookName(params.sourceBook);
+  const cleanTarget = sanitizeBookName(params.targetBook);
+
+  if (!cleanSource || !cleanTarget) {
+    throw new Error('Nama buku asal dan buku tujuan tidak valid.');
+  }
+
+  if (cleanSource.toLowerCase() === cleanTarget.toLowerCase()) {
+    throw new Error('Buku asal dan buku tujuan tidak boleh sama.');
+  }
+
+  const books = await getAllSheetBooks();
+  const sourceExists = books.find((b) => b.toLowerCase() === cleanSource.toLowerCase());
+  if (!sourceExists) {
+    throw new Error(`Buku asal "${cleanSource}" tidak ditemukan.`);
+  }
+
+  const targetExists = books.find((b) => b.toLowerCase() === cleanTarget.toLowerCase());
+  if (!targetExists) {
+    throw new Error(`Buku tujuan "${cleanTarget}" tidak ditemukan.`);
+  }
+
+  if (params.amount <= 0) {
+    throw new Error('Nominal pemindahan saldo harus lebih dari 0.');
+  }
+
+  const [sourceSummary, targetSummary] = await Promise.all([
+    getMonthSummary(undefined, undefined, sourceExists),
+    getMonthSummary(undefined, undefined, targetExists),
+  ]);
+
+  if (sourceSummary.saldo < params.amount) {
+    throw new Error(
+      `Saldo buku "${sourceExists}" tidak mencukupi. Sisa saldo saat ini: Rp ${sourceSummary.saldo.toLocaleString('id-ID')}, nominal yang ingin dipindah: Rp ${params.amount.toLocaleString('id-ID')}`
+    );
+  }
+
+  const todayStr = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Jakarta',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date());
+
+  const sourceDesc = params.description
+    ? `Pindah saldo ke ${targetExists} (${params.description})`
+    : `Pindah saldo ke buku ${targetExists}`;
+
+  const targetDesc = params.description
+    ? `Pindah saldo dari ${sourceExists} (${params.description})`
+    : `Pindah saldo dari buku ${sourceExists}`;
+
+  // 1. Catat Pengeluaran di buku asal
+  await appendTransaction(
+    {
+      date: todayStr,
+      type: 'Pengeluaran',
+      category: 'Pindah Saldo',
+      amount: params.amount,
+      description: sourceDesc,
+    },
+    sourceExists
+  );
+
+  // 2. Catat Pemasukan di buku tujuan
+  await appendTransaction(
+    {
+      date: todayStr,
+      type: 'Pemasukan',
+      category: 'Pindah Saldo',
+      amount: params.amount,
+      description: targetDesc,
+    },
+    targetExists
+  );
+
+  return {
+    success: true,
+    sourceBook: sourceExists,
+    targetBook: targetExists,
+    amount: params.amount,
+    sourceBalanceBefore: sourceSummary.saldo,
+    sourceBalanceAfter: sourceSummary.saldo - params.amount,
+    targetBalanceBefore: targetSummary.saldo,
+    targetBalanceAfter: targetSummary.saldo + params.amount,
+    date: todayStr,
   };
 }

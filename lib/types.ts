@@ -50,3 +50,22 @@ export interface GlobalSummaryReport {
   categoryIncome: Record<string, number>;
   books: BookSummary[];
 }
+
+export interface TransferBalanceParams {
+  sourceBook: string;
+  targetBook: string;
+  amount: number;
+  description?: string;
+}
+
+export interface TransferBalanceResult {
+  success: boolean;
+  sourceBook: string;
+  targetBook: string;
+  amount: number;
+  sourceBalanceBefore: number;
+  sourceBalanceAfter: number;
+  targetBalanceBefore: number;
+  targetBalanceAfter: number;
+  date: string;
+}
