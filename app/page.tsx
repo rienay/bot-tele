@@ -11,6 +11,43 @@ function formatRupiah(amount: number): string {
   }).format(amount);
 }
 
+function parseDateParts(dateStr: string): { year?: string; month?: string } {
+  if (!dateStr) return {};
+  const cleaned = String(dateStr).trim().replace(/^'/, '');
+  // Format YYYY-MM-DD or YYYY/MM/DD
+  const ymdMatch = cleaned.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
+  if (ymdMatch) {
+    return {
+      year: ymdMatch[1],
+      month: ymdMatch[2].padStart(2, '0'),
+    };
+  }
+  // Format DD-MM-YYYY or DD/MM/YYYY
+  const dmyMatch = cleaned.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})/);
+  if (dmyMatch) {
+    return {
+      year: dmyMatch[3],
+      month: dmyMatch[2].padStart(2, '0'),
+    };
+  }
+  return {};
+}
+
+const MONTH_OPTIONS = [
+  { value: '01', label: 'Januari' },
+  { value: '02', label: 'Februari' },
+  { value: '03', label: 'Maret' },
+  { value: '04', label: 'April' },
+  { value: '05', label: 'Mei' },
+  { value: '06', label: 'Juni' },
+  { value: '07', label: 'Juli' },
+  { value: '08', label: 'Agustus' },
+  { value: '09', label: 'September' },
+  { value: '10', label: 'Oktober' },
+  { value: '11', label: 'November' },
+  { value: '12', label: 'Desember' },
+];
+
 export default function FinanceDashboardPage() {
   const [data, setData] = useState<WebFinanceData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -18,7 +55,9 @@ export default function FinanceDashboardPage() {
   const [selectedBook, setSelectedBook] = useState<string>('Semua');
   const [searchQuery, setSearchQuery] = useState('');
   const [typeFilter, setTypeFilter] = useState<'all' | 'Pemasukan' | 'Pengeluaran' | 'with_receipt'>('all');
-  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  const [selectedCategory, setSelectedCategory] = useState<string>('all');
+  const [selectedMonth, setSelectedMonth] = useState<string>('all');
+  const [selectedYear, setSelectedYear] = useState<string>('all');
   const [visibleCount, setVisibleCount] = useState(25);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
@@ -49,7 +88,28 @@ export default function FinanceDashboardPage() {
     setVisibleCount(25);
   }, [selectedBook]);
 
-  // Filter transaksi berdasarkan search, jenis, dan kategori
+  // Daftar tahun unik dari data
+  const availableYears = useMemo(() => {
+    if (!data?.transactions) return [];
+    const years = new Set<string>();
+    data.transactions.forEach((tx) => {
+      const { year } = parseDateParts(tx.date);
+      if (year) years.add(year);
+    });
+    return Array.from(years).sort((a, b) => b.localeCompare(a));
+  }, [data?.transactions]);
+
+  // Daftar kategori unik dari data
+  const availableCategories = useMemo(() => {
+    if (!data?.transactions) return [];
+    const cats = new Set<string>();
+    data.transactions.forEach((tx) => {
+      if (tx.category && tx.category.trim()) cats.add(tx.category.trim());
+    });
+    return Array.from(cats).sort((a, b) => a.localeCompare(b));
+  }, [data?.transactions]);
+
+  // Filter transaksi berdasarkan search, jenis, kategori, bulan, dan tahun
   const filteredTransactions = useMemo(() => {
     if (!data?.transactions) return [];
 
@@ -60,7 +120,14 @@ export default function FinanceDashboardPage() {
       if (typeFilter === 'with_receipt' && !tx.noteLink) return false;
 
       // Filter Kategori
-      if (selectedCategory && tx.category !== selectedCategory) return false;
+      if (selectedCategory !== 'all' && tx.category !== selectedCategory) return false;
+
+      // Filter Bulan & Tahun
+      if (selectedYear !== 'all' || selectedMonth !== 'all') {
+        const { year, month } = parseDateParts(tx.date);
+        if (selectedYear !== 'all' && year !== selectedYear) return false;
+        if (selectedMonth !== 'all' && month !== selectedMonth) return false;
+      }
 
       // Filter Search (keterangan, kategori, PIC, tanggal, buku)
       if (searchQuery.trim()) {
@@ -77,7 +144,38 @@ export default function FinanceDashboardPage() {
 
       return true;
     });
-  }, [data?.transactions, typeFilter, selectedCategory, searchQuery]);
+  }, [data?.transactions, typeFilter, selectedCategory, selectedMonth, selectedYear, searchQuery]);
+
+  // Ringkasan metrik dari transaksi yang sedang difilter
+  const filteredSummary = useMemo(() => {
+    let income = 0;
+    let expense = 0;
+    for (const tx of filteredTransactions) {
+      if (tx.type === 'Pemasukan') income += tx.amount;
+      else expense += tx.amount;
+    }
+    return {
+      income,
+      expense,
+      balance: income - expense,
+      count: filteredTransactions.length,
+    };
+  }, [filteredTransactions]);
+
+  const isAnyFilterActive =
+    typeFilter !== 'all' ||
+    selectedCategory !== 'all' ||
+    selectedMonth !== 'all' ||
+    selectedYear !== 'all' ||
+    searchQuery.trim() !== '';
+
+  const handleResetFilters = () => {
+    setTypeFilter('all');
+    setSelectedCategory('all');
+    setSelectedMonth('all');
+    setSelectedYear('all');
+    setSearchQuery('');
+  };
 
   // Hitung kategori unik untuk chip breakdown
   const categoryStats = useMemo(() => {
@@ -211,9 +309,9 @@ export default function FinanceDashboardPage() {
           <section className="category-summary-box">
             <div className="category-summary-title">
               <span>🎯 Top Kategori Belanja ({selectedBook}):</span>
-              {selectedCategory && (
+              {selectedCategory !== 'all' && (
                 <button
-                  onClick={() => setSelectedCategory(null)}
+                  onClick={() => setSelectedCategory('all')}
                   style={{ background: 'none', border: 'none', color: '#BE123C', fontSize: '0.8rem', cursor: 'pointer', fontWeight: 700 }}
                 >
                   ✕ Reset Filter Kategori
@@ -224,7 +322,7 @@ export default function FinanceDashboardPage() {
               {categoryStats.map(([cat, amount]) => (
                 <button
                   key={cat}
-                  onClick={() => setSelectedCategory(selectedCategory === cat ? null : cat)}
+                  onClick={() => setSelectedCategory(selectedCategory === cat ? 'all' : cat)}
                   className="category-chip"
                   style={{
                     cursor: 'pointer',
@@ -244,43 +342,143 @@ export default function FinanceDashboardPage() {
 
         {/* Filter & Search Bar */}
         <section className="controls-bar">
-          <div className="search-box">
-            <span className="search-icon">🔍</span>
-            <input
-              type="text"
-              placeholder="Cari transaksi, item, kategori, atau PIC..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="search-input"
-            />
+          <div className="controls-row-top">
+            <div className="search-box">
+              <span className="search-icon">🔍</span>
+              <input
+                type="text"
+                placeholder="Cari transaksi, item, kategori, tanggal, atau PIC..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="search-input"
+              />
+            </div>
+
+            <div className="filter-pills">
+              <button
+                className={`filter-pill ${typeFilter === 'all' ? 'active' : ''}`}
+                onClick={() => setTypeFilter('all')}
+              >
+                Semua ({data?.transactions.length || 0})
+              </button>
+              <button
+                className={`filter-pill ${typeFilter === 'Pengeluaran' ? 'active' : ''}`}
+                onClick={() => setTypeFilter('Pengeluaran')}
+              >
+                🔴 Pengeluaran
+              </button>
+              <button
+                className={`filter-pill ${typeFilter === 'Pemasukan' ? 'active' : ''}`}
+                onClick={() => setTypeFilter('Pemasukan')}
+              >
+                🟢 Pemasukan
+              </button>
+              <button
+                className={`filter-pill ${typeFilter === 'with_receipt' ? 'active' : ''}`}
+                onClick={() => setTypeFilter('with_receipt')}
+              >
+                📎 Ada Nota Struk
+              </button>
+            </div>
           </div>
 
-          <div className="filter-pills">
-            <button
-              className={`filter-pill ${typeFilter === 'all' ? 'active' : ''}`}
-              onClick={() => setTypeFilter('all')}
-            >
-              Semua ({data?.transactions.length || 0})
-            </button>
-            <button
-              className={`filter-pill ${typeFilter === 'Pengeluaran' ? 'active' : ''}`}
-              onClick={() => setTypeFilter('Pengeluaran')}
-            >
-              🔴 Pengeluaran
-            </button>
-            <button
-              className={`filter-pill ${typeFilter === 'Pemasukan' ? 'active' : ''}`}
-              onClick={() => setTypeFilter('Pemasukan')}
-            >
-              🟢 Pemasukan
-            </button>
-            <button
-              className={`filter-pill ${typeFilter === 'with_receipt' ? 'active' : ''}`}
-              onClick={() => setTypeFilter('with_receipt')}
-            >
-              📎 Ada Nota Struk
-            </button>
+          <div className="controls-row-filters">
+            {/* Filter Kategori Dropdown */}
+            <div className="filter-select-wrapper">
+              <select
+                value={selectedCategory}
+                onChange={(e) => setSelectedCategory(e.target.value)}
+                className={`filter-select ${selectedCategory !== 'all' ? 'active' : ''}`}
+                title="Filter berdasarkan Kategori"
+              >
+                <option value="all">📂 Semua Kategori</option>
+                {availableCategories.map((cat) => (
+                  <option key={cat} value={cat}>
+                    {cat}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Filter Bulan Dropdown */}
+            <div className="filter-select-wrapper">
+              <select
+                value={selectedMonth}
+                onChange={(e) => setSelectedMonth(e.target.value)}
+                className={`filter-select ${selectedMonth !== 'all' ? 'active' : ''}`}
+                title="Filter berdasarkan Bulan"
+              >
+                <option value="all">📅 Semua Bulan</option>
+                {MONTH_OPTIONS.map((m) => (
+                  <option key={m.value} value={m.value}>
+                    {m.value} - {m.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Filter Tahun Dropdown */}
+            <div className="filter-select-wrapper">
+              <select
+                value={selectedYear}
+                onChange={(e) => setSelectedYear(e.target.value)}
+                className={`filter-select ${selectedYear !== 'all' ? 'active' : ''}`}
+                title="Filter berdasarkan Tahun"
+              >
+                <option value="all">🗓️ Semua Tahun</option>
+                {availableYears.map((yr) => (
+                  <option key={yr} value={yr}>
+                    Tahun {yr}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Tombol Reset Filter */}
+            {isAnyFilterActive && (
+              <button
+                onClick={handleResetFilters}
+                className="btn-reset-filters"
+                title="Kembalikan semua filter ke awal"
+              >
+                <span>✕</span>
+                <span>Reset Filter</span>
+              </button>
+            )}
           </div>
+
+          {/* Banner Ringkasan Hasil Filter */}
+          {isAnyFilterActive && (
+            <div className="filtered-summary-banner">
+              <div className="filtered-summary-metrics">
+                <span className="filtered-summary-item">
+                  <span>📊 Terfilter:</span>
+                  <span className="filtered-summary-val">{filteredSummary.count} Transaksi</span>
+                </span>
+                <span className="filtered-summary-item">
+                  <span>📥 Pemasukan:</span>
+                  <span className="filtered-summary-val" style={{ color: '#047857' }}>
+                    +{formatRupiah(filteredSummary.income)}
+                  </span>
+                </span>
+                <span className="filtered-summary-item">
+                  <span>📤 Pengeluaran:</span>
+                  <span className="filtered-summary-val" style={{ color: '#BE123C' }}>
+                    -{formatRupiah(filteredSummary.expense)}
+                  </span>
+                </span>
+                <span className="filtered-summary-item">
+                  <span>💰 Saldo Periode:</span>
+                  <span
+                    className="filtered-summary-val"
+                    style={{ color: filteredSummary.balance >= 0 ? '#047857' : '#BE123C' }}
+                  >
+                    {formatRupiah(filteredSummary.balance)}
+                  </span>
+                </span>
+              </div>
+            </div>
+          )}
         </section>
 
         {/* Transactions Feed */}
@@ -332,83 +530,136 @@ export default function FinanceDashboardPage() {
               </div>
             </div>
           ) : (
-            <div className="transaction-list">
-              {filteredTransactions.slice(0, visibleCount).map((tx) => {
-                const isIncome = tx.type === 'Pemasukan';
-                return (
-                  <article key={tx.id} className="tx-card">
-                    <div className="tx-left">
-                      <div className={`tx-icon-badge ${isIncome ? 'pemasukan' : 'pengeluaran'}`}>
-                        {isIncome ? '📥' : '📤'}
-                      </div>
-
-                      <div className="tx-info">
-                        <div className="tx-desc-row">
-                          <span className="tx-desc">{tx.description || tx.category}</span>
-                          {tx.pic && (
-                            <span className="tx-pic-badge">
-                              <span>👤</span>
-                              <span>PIC: {tx.pic}</span>
-                            </span>
-                          )}
-                        </div>
-
-                        <div className="tx-meta-row">
-                          <span>📅 {tx.date}</span>
-                          <span>•</span>
-                          <span className="tx-pill">{tx.category}</span>
-                          <span>•</span>
-                          <span style={{ fontWeight: 600, color: '#9F1239' }}>📖 {tx.book}</span>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="tx-right">
-                      <div className={`tx-amount ${isIncome ? 'pemasukan' : 'pengeluaran'}`}>
-                        {isIncome ? '+' : '-'} {formatRupiah(tx.amount)}
-                      </div>
-
-                      {tx.noteLink ? (
-                        <a
-                          href={tx.noteLink}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="btn-nota"
-                          title="Buka bukti foto struk di Google Drive"
-                        >
-                          <span>📎</span>
-                          <span>Lihat Nota</span>
-                        </a>
-                      ) : (
-                        <span style={{ fontSize: '0.72rem', color: '#9CA3AF' }}>Tanpa Struk</span>
-                      )}
-                    </div>
-                  </article>
-                );
-              })}
+            <>
+              <div className="table-scroll-hint">
+                <span>↔️ Geser tabel ke samping untuk melihat nominal & nota</span>
+              </div>
+              <div className="table-card">
+                <div className="table-responsive">
+                  <table className="finance-table">
+                    <thead>
+                      <tr>
+                        <th className="col-num desktop-only">#</th>
+                        <th className="col-date desktop-only">Tanggal</th>
+                        <th>Keterangan</th>
+                        <th className="desktop-only">Buku Kas</th>
+                        <th className="desktop-only">Kategori</th>
+                        <th className="desktop-only">Jenis</th>
+                        <th style={{ textAlign: 'right' }}>Nominal</th>
+                        <th className="desktop-only" style={{ textAlign: 'center' }}>Bukti Nota</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredTransactions.slice(0, visibleCount).map((tx, idx) => {
+                        const isIncome = tx.type === 'Pemasukan';
+                        return (
+                          <tr key={tx.id || idx}>
+                            <td className="col-num desktop-only">{idx + 1}</td>
+                            <td className="col-date desktop-only">
+                              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
+                                <span>📅</span>
+                                <span>{tx.date}</span>
+                              </span>
+                            </td>
+                            <td className="col-desc">
+                              <span className="tx-table-desc">{tx.description || tx.category}</span>
+                              {/* Mobile-only metadata */}
+                              <div className="mobile-only-meta">
+                                <span>📅 {tx.date}</span>
+                                <span>•</span>
+                                <span className="book-badge">📖 {tx.book}</span>
+                                <span>•</span>
+                                <span className="cat-badge">{tx.category}</span>
+                                {tx.pic && (
+                                  <span className="tx-table-pic">
+                                    <span>👤</span>
+                                    <span>{tx.pic}</span>
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+                            <td className="desktop-only">
+                              <span className="book-badge">
+                                <span>📖</span>
+                                <span>{tx.book}</span>
+                              </span>
+                            </td>
+                            <td className="desktop-only">
+                              <span className="cat-badge">{tx.category}</span>
+                            </td>
+                            <td className="desktop-only">
+                              <span className={`type-badge ${isIncome ? 'pemasukan' : 'pengeluaran'}`}>
+                                <span>{isIncome ? '📥 Masuk' : '📤 Keluar'}</span>
+                              </span>
+                            </td>
+                            <td className={`col-amount ${isIncome ? 'pemasukan' : 'pengeluaran'}`}>
+                              <div>
+                                {isIncome ? '+' : '-'} {formatRupiah(tx.amount)}
+                              </div>
+                              {/* Mobile-only nota link */}
+                              <div className="mobile-only-nota">
+                                {tx.noteLink ? (
+                                  <a
+                                    href={tx.noteLink}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="btn-nota-sm"
+                                    title="Buka bukti foto struk"
+                                  >
+                                    <span>📎</span>
+                                    <span>Lihat Nota</span>
+                                  </a>
+                                ) : (
+                                  <span style={{ fontSize: '0.72rem', color: '#9CA3AF' }}>Tanpa Struk</span>
+                                )}
+                              </div>
+                            </td>
+                            <td className="col-nota desktop-only">
+                              {tx.noteLink ? (
+                                <a
+                                  href={tx.noteLink}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="btn-nota"
+                                  title="Buka bukti foto struk di Google Drive"
+                                >
+                                  <span>📎</span>
+                                  <span>Lihat Nota</span>
+                                </a>
+                              ) : (
+                                <span style={{ fontSize: '0.75rem', color: '#9CA3AF' }}>—</span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
 
               {visibleCount < filteredTransactions.length && (
-                <div style={{ textAlign: 'center', marginTop: '1.5rem' }}>
+                <div style={{ textAlign: 'center', padding: '1.25rem', borderTop: '1px solid rgba(244, 63, 94, 0.1)', background: '#FFFDFE' }}>
                   <button
-                    onClick={() => setVisibleCount((prev) => prev + 25)}
+                    onClick={() => setVisibleCount((prev) => prev + 50)}
                     style={{
-                      padding: '0.75rem 2rem',
+                      padding: '0.65rem 1.75rem',
                       borderRadius: '9999px',
                       background: 'linear-gradient(135deg, #F43F5E, #FB7185)',
                       color: '#FFFFFF',
                       border: 'none',
-                      fontSize: '0.9rem',
+                      fontSize: '0.85rem',
                       fontWeight: 800,
                       cursor: 'pointer',
-                      boxShadow: '0 4px 14px rgba(244, 63, 94, 0.35)',
+                      boxShadow: '0 4px 14px rgba(244, 63, 94, 0.25)',
                       transition: 'all 0.2s ease',
                     }}
                   >
-                    Muat 25 Transaksi Lagi ⤵
+                    Muat 50 Transaksi Lagi (Sisa {filteredTransactions.length - visibleCount}) ⤵
                   </button>
                 </div>
               )}
-            </div>
+              </div>
+            </>
           )}
         </section>
 
