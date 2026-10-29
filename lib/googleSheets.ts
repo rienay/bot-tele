@@ -953,5 +953,97 @@ export async function getTransactionByRow(
   }
 }
 
+/**
+ * Mencari baris transaksi di Google Sheets yang cocok dengan kriteria (tanpa foto atau berdasarkan nominal/keterangan)
+ */
+export async function findMatchingTransactionRow(
+  sheetName: string = DEFAULT_BOOK_NAME,
+  criteria: {
+    amount?: number;
+    description?: string;
+    date?: string;
+  }
+): Promise<RecentTransactionItem | null> {
+  await ensureHeaderRow(sheetName);
+
+  const auth = getGoogleAuth();
+  const sheets = google.sheets({ version: 'v4', auth });
+  const spreadsheetId = getSpreadsheetId();
+
+  try {
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: `'${sheetName}'!A2:G`,
+    });
+
+    const rows = res.data.values || [];
+    if (rows.length === 0) return null;
+
+    let candidateWithoutPhoto: RecentTransactionItem | null = null;
+    let candidateAny: RecentTransactionItem | null = null;
+
+    // Scan dari baris paling bawah (transaksi terbaru)
+    for (let i = rows.length - 1; i >= 0; i--) {
+      const row = rows[i];
+      const [tglRaw, jenisRaw, katRaw, nominalRaw, keteranganRaw, noteLinkRaw, waktuRaw] = row;
+      if (!tglRaw && !nominalRaw) continue;
+
+      const cleanNominal = typeof nominalRaw === 'number'
+        ? nominalRaw
+        : parseInt(String(nominalRaw || 0).replace(/[^0-9]/g, ''), 10) || 0;
+
+      const rowDesc = String(keteranganRaw || '').toLowerCase();
+      const link = String(noteLinkRaw || '').trim();
+      const hasPhoto = link.startsWith('http://') || link.startsWith('https://');
+
+      // 1. Cek kecocokan nominal jika disediakan
+      if (criteria.amount !== undefined && criteria.amount > 0) {
+        if (cleanNominal !== criteria.amount) continue;
+      }
+
+      // 2. Cek kecocokan deskripsi jika ada
+      if (criteria.description) {
+        const critDesc = criteria.description.toLowerCase().trim();
+        const cleanCrit = critDesc.replace(/\(pic:[^)]+\)/gi, '').trim();
+        const cleanRow = rowDesc.replace(/\(pic:[^)]+\)/gi, '').trim();
+
+        const words = cleanCrit.split(/\s+/).filter((w) => w.length > 2);
+        const matchScore = words.filter((w) => cleanRow.includes(w)).length;
+
+        if (words.length > 0 && matchScore === 0 && !cleanRow.includes(cleanCrit) && !cleanCrit.includes(cleanRow)) {
+          continue;
+        }
+      }
+
+      const item: RecentTransactionItem = {
+        rowNumber: i + 2,
+        date: String(tglRaw || '').replace(/^'/, ''),
+        type: String(jenisRaw || ''),
+        category: String(katRaw || ''),
+        amount: cleanNominal,
+        description: String(keteranganRaw || '-'),
+        noteLink: link,
+        hasPhoto,
+        createdAt: String(waktuRaw || '-'),
+      };
+
+      // Prioritaskan transaksi yang belum memiliki foto
+      if (!hasPhoto) {
+        return item;
+      }
+
+      if (!candidateAny) {
+        candidateAny = item;
+      }
+    }
+
+    return candidateWithoutPhoto || candidateAny;
+  } catch (err) {
+    console.warn('Gagal mencari transaksi matching:', err);
+    return null;
+  }
+}
+
+
 
 
