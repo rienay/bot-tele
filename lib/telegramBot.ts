@@ -14,6 +14,7 @@ import {
   DEFAULT_BOOK_NAME,
   sanitizeBookName,
   transferBookBalance,
+  getRecentTransactionsWithNotes,
 } from './googleSheets';
 import {
   getDaftarAnggota,
@@ -26,7 +27,7 @@ import {
   DAFTAR_BULAN,
   NOMINAL_IURAN_DEFAULT,
 } from './kasAnggota';
-import { uploadReceiptToDrive } from './googleDrive';
+import { uploadReceiptToDrive, getDriveConfigStatus, testDriveUpload } from './googleDrive';
 import { formatPrivateKey, getGoogleAuth } from './googleAuth';
 import { generateNotaPdf, HARGA_PER_KG, rupiahFormat } from './generateNota';
 import { ExpenseDetail } from './types';
@@ -115,6 +116,7 @@ async function syncBotCommands(api: any) {
       { command: 'pindahsaldo', description: 'Pindah saldo antar buku/kegiatan' },
       { command: 'rekap', description: 'Rekap buku kegiatan aktif' },
       { command: 'rekapkas', description: 'Rekap seluruh kas & kegiatan' },
+      { command: 'cekfoto', description: 'Cek status unggahan foto nota di Drive' },
       { command: 'kas', description: 'Beralih ke buku Kas Utama' },
       { command: 'buku', description: 'Daftar & ganti buku kegiatan' },
       { command: 'cekkas', description: 'Cek kas anggota (lunas & belum bayar)' },
@@ -289,6 +291,7 @@ bot.command(['start', 'help'], async (ctx) => {
       `• /pindahsaldo — *Pindah Saldo* (sisa kegiatan ke Kas/lainnya)\n` +
       `• /rekap — *Rekap Buku Aktif* (\`${activeBook}\`)\n` +
       `• /rekapkas — *Rekap Seluruh Kas* (semua kegiatan + kas)\n` +
+      `• /cekfoto — *Cek Foto Nota* (status nota & link Google Drive)\n` +
       `• /kas — Beralih ke Buku *Kas Utama*\n` +
       `• /buku — Daftar & tombol ganti buku\n\n` +
       `👥 *Menu Iuran Kas Anggota:*\n` +
@@ -1766,6 +1769,148 @@ bot.command(['rekapkas', 'recapkas'], async (ctx) => {
   const text = ctx.message?.text || '';
   const parts = text.split(' ').slice(1).join(' ').trim();
   await sendRekapKas(ctx, parts);
+});
+
+async function handleCekFoto(ctx: any, customBook?: string) {
+  const chatId = ctx.chat?.id || ctx.from?.id;
+  const activeBook = customBook?.trim() || (await getUserActiveBook(chatId));
+
+  const driveConfig = getDriveConfigStatus();
+
+  let statusDriveText = '';
+  if (driveConfig.mode === 'gas') {
+    statusDriveText = '🟢 Google Apps Script Webhook';
+  } else if (driveConfig.mode === 'service_account') {
+    statusDriveText = '🟡 Service Account API';
+  } else {
+    statusDriveText = '🔴 Belum Dikonfigurasi';
+  }
+
+  const items = await getRecentTransactionsWithNotes(activeBook, 6);
+
+  if (items.length === 0) {
+    const keyboard = new InlineKeyboard()
+      .text('🔄 Segarkan', `cekfoto_refresh:${activeBook}`)
+      .text('📡 Tes Koneksi Drive', 'cekfoto_test')
+      .row();
+
+    if (driveConfig.hasFolder) {
+      keyboard.url('📁 Buka Folder Drive', driveConfig.folderUrl);
+    }
+
+    await ctx.reply(
+      `📸 *Status Foto Nota & Bukti Transaksi*\n\n` +
+        `📖 *Buku:* \`${activeBook}\`\n` +
+        `📡 *Koneksi Drive:* ${statusDriveText}\n\n` +
+        `_Belum ada transaksi yang tercatat di buku ini._\n\n` +
+        `💡 *Tips:* Kirim foto struk/nota kasir ke bot ini untuk otomatis membaca transaksi dan menyimpan buktinya ke Google Drive!`,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: keyboard,
+        link_preview_options: { is_disabled: true },
+      }
+    );
+    return;
+  }
+
+  let textList = '';
+  let countPhoto = 0;
+  let countNoPhoto = 0;
+
+  items.forEach((item, idx) => {
+    const num = idx + 1;
+    const typeIcon = item.type.toLowerCase().includes('masuk') ? '🟢' : '🔴';
+    const amountStr = formatRupiah(item.amount);
+
+    let photoStatus = '';
+    if (item.hasPhoto) {
+      countPhoto++;
+      photoStatus = `✅ [Buka Foto di Drive](${item.noteLink})`;
+    } else {
+      countNoPhoto++;
+      photoStatus = `❌ _Belum ada foto / gagal unggah_`;
+    }
+
+    textList +=
+      `*${num}.* ${item.date} — *${item.description}*\n` +
+      `    ${typeIcon} ${amountStr} (${item.category || item.type})\n` +
+      `    📎 *Foto:* ${photoStatus}\n\n`;
+  });
+
+  const keyboard = new InlineKeyboard()
+    .text('🔄 Segarkan', `cekfoto_refresh:${activeBook}`)
+    .text('📡 Tes Koneksi Drive', 'cekfoto_test')
+    .row();
+
+  if (driveConfig.hasFolder) {
+    keyboard.url('📁 Buka Folder Google Drive', driveConfig.folderUrl);
+  }
+
+  const summaryPhotoText =
+    `📊 *Ringkasan ${items.length} Transaksi Terakhir:*\n` +
+    `• 📸 *Ada Foto Terunggah:* ${countPhoto}\n` +
+    `• ⚠️ *Tanpa Foto / Gagal:* ${countNoPhoto}`;
+
+  await ctx.reply(
+    `📸 *Status Foto Nota & Bukti Transaksi*\n\n` +
+      `📖 *Buku Kegiatan:* \`${activeBook}\`\n` +
+      `📡 *Koneksi Drive:* ${statusDriveText}\n\n` +
+      `━━━━━━━━━━━━━━━━━━━━━\n` +
+      textList +
+      `━━━━━━━━━━━━━━━━━━━━━\n` +
+      `${summaryPhotoText}\n\n` +
+      `💡 _Klik tautan [Buka Foto di Drive] untuk melihat struk langsung di Google Drive._`,
+    {
+      parse_mode: 'Markdown',
+      reply_markup: keyboard,
+      link_preview_options: { is_disabled: true },
+    }
+  );
+}
+
+// Callback: Refresh cekfoto
+bot.callbackQuery(/^cekfoto_refresh:(.+)$/, async (ctx) => {
+  const targetBook = ctx.match[1];
+  await ctx.answerCallbackQuery({ text: 'Memperbarui status foto...' });
+  try {
+    await handleCekFoto(ctx, targetBook);
+  } catch (err: any) {
+    await ctx.reply(`❌ Gagal memperbarui data: ${err?.message || err}`);
+  }
+});
+
+// Callback: Tes koneksi upload Drive
+bot.callbackQuery('cekfoto_test', async (ctx) => {
+  await ctx.answerCallbackQuery({ text: 'Menguji koneksi upload ke Google Drive...' });
+  const statusMsg = await ctx.reply('⏳ *Sedang menguji koneksi Google Drive...*', { parse_mode: 'Markdown' });
+
+  const testResult = await testDriveUpload();
+
+  const keyboard = new InlineKeyboard();
+  if (testResult.url) {
+    keyboard.url('📄 Buka File Uji Coba', testResult.url);
+  }
+
+  const resultIcon = testResult.success ? '✅' : '❌';
+  await ctx.api.editMessageText(
+    ctx.chat!.id,
+    statusMsg.message_id,
+    `${resultIcon} *Hasil Uji Coba Koneksi Google Drive:*\n\n` +
+      `${testResult.message}\n` +
+      (testResult.url ? `\n🔗 [Lihat File Test di Drive](${testResult.url})` : ''),
+    {
+      parse_mode: 'Markdown',
+      reply_markup: keyboard,
+      link_preview_options: { is_disabled: true },
+    }
+  );
+});
+
+// Command: /cekfoto
+bot.command(['cekfoto', 'foto', 'statusfoto', 'nota_foto'], async (ctx) => {
+  const text = ctx.message?.text || '';
+  const parts = text.split(' ').slice(1).join(' ').trim();
+  await handleCekFoto(ctx, parts || undefined);
 });
 
 // Command Kas Anggota

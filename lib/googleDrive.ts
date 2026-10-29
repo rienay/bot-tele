@@ -101,3 +101,66 @@ export async function uploadReceiptToDrive(
 
   return null;
 }
+
+/**
+ * Memeriksa status konfigurasi Google Drive saat ini
+ */
+export function getDriveConfigStatus() {
+  const rawFolderId = process.env.GOOGLE_DRIVE_FOLDER_ID;
+  const folderId = extractFolderId(rawFolderId);
+  const gasUrl = process.env.GOOGLE_DRIVE_GAS_URL?.trim();
+
+  const folderUrl = folderId
+    ? `https://drive.google.com/drive/folders/${folderId}`
+    : 'https://drive.google.com';
+
+  return {
+    hasFolder: Boolean(folderId),
+    folderId,
+    folderUrl,
+    hasGas: Boolean(gasUrl),
+    gasUrl,
+    mode: gasUrl ? ('gas' as const) : folderId ? ('service_account' as const) : ('none' as const),
+  };
+}
+
+/**
+ * Menguji koneksi upload ke Google Drive dengan file dummy kecil
+ */
+export async function testDriveUpload(): Promise<{ success: boolean; message: string; url?: string }> {
+  const config = getDriveConfigStatus();
+
+  if (config.mode === 'none') {
+    return {
+      success: false,
+      message: 'Belum ada konfigurasi Google Drive (GOOGLE_DRIVE_FOLDER_ID atau GOOGLE_DRIVE_GAS_URL kosong).',
+    };
+  }
+
+  const dummyBuffer = Buffer.from(`Test upload bot pada ${new Date().toISOString()}`);
+  const fileName = `test_bot_${Date.now()}.txt`;
+
+  try {
+    const link = await uploadReceiptToDrive(dummyBuffer, fileName, 'text/plain');
+    if (link) {
+      return {
+        success: true,
+        message: 'Koneksi upload Google Drive aktif dan normal! Foto nota dapat tersimpan.',
+        url: link,
+      };
+    } else {
+      return {
+        success: false,
+        message: config.mode === 'gas'
+          ? 'Webhook Google Apps Script merespons error atau akses ditolak. Cek kembali hak akses Web App.'
+          : 'Service Account tidak memiliki kuota penyimpanan untuk akun Gmail personal. Gunakan Google Apps Script Webhook.',
+      };
+    }
+  } catch (err: any) {
+    return {
+      success: false,
+      message: `Error saat pengujian upload: ${err?.message || err}`,
+    };
+  }
+}
+

@@ -849,3 +849,66 @@ export async function getAllTransactionsForWeb(targetBook: string = 'Semua'): Pr
   return data;
 }
 
+export interface RecentTransactionItem {
+  rowNumber: number;
+  date: string;
+  type: string;
+  category: string;
+  amount: number;
+  description: string;
+  noteLink: string;
+  hasPhoto: boolean;
+  createdAt: string;
+}
+
+/**
+ * Mengambil transaksi terbaru untuk mengecek status foto nota pada buku/sheet tertentu
+ */
+export async function getRecentTransactionsWithNotes(
+  sheetName: string = DEFAULT_BOOK_NAME,
+  limit: number = 8
+): Promise<RecentTransactionItem[]> {
+  await ensureHeaderRow(sheetName);
+
+  const auth = getGoogleAuth();
+  const sheets = google.sheets({ version: 'v4', auth });
+  const spreadsheetId = getSpreadsheetId();
+
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: `'${sheetName}'!A2:G`,
+  });
+
+  const rows = res.data.values || [];
+  const items: RecentTransactionItem[] = [];
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    const [tglRaw, jenisRaw, katRaw, nominalRaw, keteranganRaw, noteLinkRaw, waktuRaw] = row;
+    if (!tglRaw && !nominalRaw) continue;
+
+    const cleanNominal = typeof nominalRaw === 'number'
+      ? nominalRaw
+      : parseInt(String(nominalRaw || 0).replace(/[^0-9]/g, ''), 10) || 0;
+
+    const link = String(noteLinkRaw || '').trim();
+    const hasPhoto = link.startsWith('http://') || link.startsWith('https://');
+
+    items.push({
+      rowNumber: i + 2,
+      date: String(tglRaw || '').replace(/^'/, ''),
+      type: String(jenisRaw || ''),
+      category: String(katRaw || ''),
+      amount: cleanNominal,
+      description: String(keteranganRaw || '-'),
+      noteLink: link,
+      hasPhoto,
+      createdAt: String(waktuRaw || '-'),
+    });
+  }
+
+  // Ambil transaksi paling baru (dari baris paling bawah)
+  return items.slice(-limit).reverse();
+}
+
+
