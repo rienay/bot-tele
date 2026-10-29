@@ -911,4 +911,47 @@ export async function getRecentTransactionsWithNotes(
   return items.slice(-limit).reverse();
 }
 
+/**
+ * Mengambil detail 1 baris transaksi tertentu berdasarkan rowNumber
+ */
+export async function getTransactionByRow(
+  sheetName: string = DEFAULT_BOOK_NAME,
+  rowNumber: number
+): Promise<RecentTransactionItem | null> {
+  const auth = getGoogleAuth();
+  const sheets = google.sheets({ version: 'v4', auth });
+  const spreadsheetId = getSpreadsheetId();
+
+  try {
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: `'${sheetName}'!A${rowNumber}:G${rowNumber}`,
+    });
+
+    const rows = res.data.values || [];
+    if (rows.length === 0) return null;
+
+    const [tglRaw, jenisRaw, katRaw, nominalRaw, keteranganRaw, noteLinkRaw, waktuRaw] = rows[0];
+    const cleanNominal = typeof nominalRaw === 'number'
+      ? nominalRaw
+      : parseInt(String(nominalRaw || 0).replace(/[^0-9]/g, ''), 10) || 0;
+    const link = String(noteLinkRaw || '').trim();
+
+    return {
+      rowNumber,
+      date: String(tglRaw || '').replace(/^'/, ''),
+      type: String(jenisRaw || ''),
+      category: String(katRaw || ''),
+      amount: cleanNominal,
+      description: String(keteranganRaw || '-'),
+      noteLink: link,
+      hasPhoto: link.startsWith('http://') || link.startsWith('https://'),
+      createdAt: String(waktuRaw || '-'),
+    };
+  } catch {
+    return null;
+  }
+}
+
+
 

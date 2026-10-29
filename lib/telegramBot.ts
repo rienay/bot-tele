@@ -15,6 +15,7 @@ import {
   sanitizeBookName,
   transferBookBalance,
   getRecentTransactionsWithNotes,
+  getTransactionByRow,
 } from './googleSheets';
 import {
   getDaftarAnggota,
@@ -96,6 +97,18 @@ interface NotaState {
 // Map: chatId → state nota yang sedang berlangsung
 const notaStates = new Map<number, NotaState>();
 
+// ============================================================
+// STATE: Unggah ulang foto nota untuk transaksi tertentu
+// ============================================================
+interface ReuploadState {
+  rowNumber: number;
+  bookName: string;
+  description: string;
+  amount: number;
+  date: string;
+}
+const reuploadStates = new Map<number, ReuploadState>();
+
 function formatRupiah(amount: number): string {
   return new Intl.NumberFormat('id-ID', {
     style: 'currency',
@@ -117,6 +130,7 @@ async function syncBotCommands(api: any) {
       { command: 'rekap', description: 'Rekap buku kegiatan aktif' },
       { command: 'rekapkas', description: 'Rekap seluruh kas & kegiatan' },
       { command: 'cekfoto', description: 'Cek status unggahan foto nota di Drive' },
+      { command: 'unggahfoto', description: 'Unggah ulang foto nota transaksi' },
       { command: 'kas', description: 'Beralih ke buku Kas Utama' },
       { command: 'buku', description: 'Daftar & ganti buku kegiatan' },
       { command: 'cekkas', description: 'Cek kas anggota (lunas & belum bayar)' },
@@ -292,6 +306,7 @@ bot.command(['start', 'help'], async (ctx) => {
       `• /rekap — *Rekap Buku Aktif* (\`${activeBook}\`)\n` +
       `• /rekapkas — *Rekap Seluruh Kas* (semua kegiatan + kas)\n` +
       `• /cekfoto — *Cek Foto Nota* (status nota & link Google Drive)\n` +
+      `• /unggahfoto — *Unggah Ulang Foto* (tambahkan nota ke transaksi lama)\n` +
       `• /kas — Beralih ke Buku *Kas Utama*\n` +
       `• /buku — Daftar & tombol ganti buku\n\n` +
       `👥 *Menu Iuran Kas Anggota:*\n` +
@@ -1842,6 +1857,10 @@ async function handleCekFoto(ctx: any, customBook?: string) {
     .text('📡 Tes Koneksi Drive', 'cekfoto_test')
     .row();
 
+  if (countNoPhoto > 0) {
+    keyboard.text('📤 Unggah Ulang Foto Nota', `reupload_list:${activeBook}`).row();
+  }
+
   if (driveConfig.hasFolder) {
     keyboard.url('📁 Buka Folder Google Drive', driveConfig.folderUrl);
   }
@@ -1868,6 +1887,46 @@ async function handleCekFoto(ctx: any, customBook?: string) {
   );
 }
 
+/**
+ * Menampilkan daftar transaksi yang belum memiliki foto untuk dipilih dan diunggah ulang
+ */
+async function handlePilihUnggahUlang(ctx: any, customBook?: string) {
+  const chatId = ctx.chat?.id || ctx.from?.id;
+  const activeBook = customBook?.trim() || (await getUserActiveBook(chatId));
+
+  const items = await getRecentTransactionsWithNotes(activeBook, 15);
+  const itemsWithoutPhoto = items.filter((it) => !it.hasPhoto);
+
+  if (itemsWithoutPhoto.length === 0) {
+    const keyboard = new InlineKeyboard().text('📸 Cek Status Foto', `cekfoto_refresh:${activeBook}`);
+    await ctx.reply(
+      `🎉 *Luar Biasa!*\n` +
+        `Semua transaksi di buku \`${activeBook}\` sudah memiliki bukti foto nota di Google Drive!\n\n` +
+        `Ketik /cekfoto untuk melihat daftar transaksi dan tautan foto.`,
+      { parse_mode: 'Markdown', reply_markup: keyboard }
+    );
+    return;
+  }
+
+  const keyboard = new InlineKeyboard();
+
+  itemsWithoutPhoto.slice(0, 8).forEach((it) => {
+    const descShort = it.description.length > 22 ? it.description.slice(0, 20) + '..' : it.description;
+    const btnLabel = `📤 #${it.rowNumber}: ${descShort} (${formatRupiah(it.amount)})`;
+    keyboard.text(btnLabel, `reupload_pick:${activeBook}:${it.rowNumber}`).row();
+  });
+
+  keyboard.text('⬅️ Kembali ke Cek Foto', `cekfoto_refresh:${activeBook}`).row();
+
+  await ctx.reply(
+    `📤 *Unggah Ulang Foto Nota*\n\n` +
+      `📖 *Buku Kegiatan:* \`${activeBook}\`\n\n` +
+      `Ditemukan *${itemsWithoutPhoto.length} transaksi* yang belum memiliki foto bukti di Google Drive.\n` +
+      `Silakan *klik salah satu tombol transaksi* di bawah untuk mengirimkan fotonya:`,
+    { parse_mode: 'Markdown', reply_markup: keyboard }
+  );
+}
+
 // Callback: Refresh cekfoto
 bot.callbackQuery(/^cekfoto_refresh:(.+)$/, async (ctx) => {
   const targetBook = ctx.match[1];
@@ -1877,6 +1936,68 @@ bot.callbackQuery(/^cekfoto_refresh:(.+)$/, async (ctx) => {
   } catch (err: any) {
     await ctx.reply(`❌ Gagal memperbarui data: ${err?.message || err}`);
   }
+});
+
+// Callback: Daftar transaksi untuk unggah ulang foto
+bot.callbackQuery(/^reupload_list:(.+)$/, async (ctx) => {
+  const targetBook = ctx.match[1];
+  await ctx.answerCallbackQuery();
+  try {
+    await handlePilihUnggahUlang(ctx, targetBook);
+  } catch (err: any) {
+    await ctx.reply(`❌ Gagal memuat daftar: ${err?.message || err}`);
+  }
+});
+
+// Callback: Pilih transaksi tertentu untuk diunggah ulang fotonya
+bot.callbackQuery(/^reupload_pick:([^:]+):(\d+)$/, async (ctx) => {
+  const targetBook = ctx.match[1];
+  const rowNum = parseInt(ctx.match[2], 10);
+  const chatId = ctx.chat?.id || ctx.from?.id;
+
+  if (!chatId) return;
+
+  await ctx.answerCallbackQuery();
+
+  const item = await getTransactionByRow(targetBook, rowNum);
+  if (!item) {
+    await ctx.reply('❌ Transaksi tidak ditemukan di Google Sheets.');
+    return;
+  }
+
+  // Set state unggah ulang foto
+  reuploadStates.set(chatId, {
+    rowNumber: item.rowNumber,
+    bookName: targetBook,
+    description: item.description,
+    amount: item.amount,
+    date: item.date,
+  });
+
+  const keyboard = new InlineKeyboard().text('❌ Batalkan', 'reupload_cancel');
+
+  await ctx.reply(
+    `📸 *Siap Menerima Foto Nota!*\n\n` +
+      `📖 *Buku:* \`${targetBook}\`\n` +
+      `📝 *Transaksi:* *${item.description}*\n` +
+      `💰 *Nominal:* ${formatRupiah(item.amount)} (${item.type})\n` +
+      `📅 *Tanggal:* ${item.date}\n` +
+      `📌 *Baris Sheets:* #${item.rowNumber}\n\n` +
+      `👉 *Silakan kirimkan file foto nota/struk sekarang.*\n` +
+      `Foto akan otomatis diunggah ke Google Drive dan tautannya disimpan di baris ini.`,
+    {
+      parse_mode: 'Markdown',
+      reply_markup: keyboard,
+    }
+  );
+});
+
+// Callback: Batalkan mode unggah ulang foto
+bot.callbackQuery('reupload_cancel', async (ctx) => {
+  const chatId = ctx.chat?.id || ctx.from?.id;
+  if (chatId) reuploadStates.delete(chatId);
+  await ctx.answerCallbackQuery({ text: 'Unggah ulang dibatalkan.' });
+  await ctx.reply('❌ Mode unggah ulang foto nota telah dibatalkan.');
 });
 
 // Callback: Tes koneksi upload Drive
@@ -1911,6 +2032,13 @@ bot.command(['cekfoto', 'foto', 'statusfoto', 'nota_foto'], async (ctx) => {
   const text = ctx.message?.text || '';
   const parts = text.split(' ').slice(1).join(' ').trim();
   await handleCekFoto(ctx, parts || undefined);
+});
+
+// Command: /unggahfoto (atau /unggahulang)
+bot.command(['unggahfoto', 'unggahulang', 'reupload', 'uploadfoto'], async (ctx) => {
+  const text = ctx.message?.text || '';
+  const parts = text.split(' ').slice(1).join(' ').trim();
+  await handlePilihUnggahUlang(ctx, parts || undefined);
 });
 
 // Command Kas Anggota
@@ -2115,6 +2243,25 @@ async function processNotaStep(ctx: any, chatId: number, text: string): Promise<
 bot.on('message:text', async (ctx) => {
   const text = ctx.message.text.trim();
   const chatId = ctx.chat.id;
+
+  // === 0. Cek apakah pengguna sedang dalam proses unggah ulang foto nota ===
+  if (reuploadStates.has(chatId)) {
+    if (text === '/batal' || text.toLowerCase() === 'batal') {
+      reuploadStates.delete(chatId);
+      await ctx.reply('❌ Mode unggah ulang foto nota telah dibatalkan.');
+      return;
+    }
+    const state = reuploadStates.get(chatId)!;
+    const keyboard = new InlineKeyboard().text('❌ Batalkan', 'reupload_cancel');
+    await ctx.reply(
+      `⚠️ Anda sedang dalam mode unggah ulang foto untuk:\n` +
+        `📝 *${state.description}* (${formatRupiah(state.amount)})\n` +
+        `📌 *Baris Sheets:* #${state.rowNumber}\n\n` +
+        `👉 *Silakan kirimkan foto nota/struk*, atau klik tombol di bawah untuk membatalkan.`,
+      { parse_mode: 'Markdown', reply_markup: keyboard }
+    );
+    return;
+  }
 
   // === 1. Cek apakah pengguna sedang dalam proses /buat buku baru ===
   if (createBookStates.has(chatId)) {
@@ -2483,6 +2630,63 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
 
     if (!fileId) {
       await ctx.reply('⚠️ Mohon kirimkan file berupa gambar foto nota/struk belanja.');
+      return;
+    }
+
+    // === Cek jika pengguna sedang dalam mode UNGGAH ULANG foto nota ===
+    if (reuploadStates.has(chatId)) {
+      const state = reuploadStates.get(chatId)!;
+      reuploadStates.delete(chatId);
+
+      await ctx.reply(
+        `⏳ *Mengunggah foto nota untuk [${state.description}] ke Google Drive...*`,
+        { parse_mode: 'Markdown' }
+      );
+      await ctx.replyWithChatAction('upload_photo');
+
+      const file = await ctx.api.getFile(fileId);
+      if (!file.file_path) {
+        throw new Error('Tidak dapat mengunduh file dari Telegram.');
+      }
+
+      const fileUrl = `https://api.telegram.org/file/bot${process.env.TELEGRAM_BOT_TOKEN}/${file.file_path}`;
+      const response = await fetch(fileUrl);
+      if (!response.ok) {
+        throw new Error(`Gagal fetch file dari Telegram: ${response.statusText}`);
+      }
+
+      const arrayBuffer = await response.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+
+      const driveLink = await uploadReceiptToDrive(buffer, fileName, mimeType);
+      if (driveLink) {
+        await updateTransactionNoteLink(state.rowNumber, driveLink, state.bookName);
+
+        const keyboard = new InlineKeyboard()
+          .url('🔗 Buka Foto di Drive', driveLink)
+          .text('📸 Cek Status Foto', `cekfoto_refresh:${state.bookName}`);
+
+        await ctx.reply(
+          `✅ *Foto Nota Berhasil Diunggah Ulang!*\n\n` +
+            `📖 *Buku:* \`${state.bookName}\`\n` +
+            `📝 *Transaksi:* *${state.description}*\n` +
+            `💰 *Nominal:* ${formatRupiah(state.amount)}\n` +
+            `📌 *Baris Sheets:* #${state.rowNumber}\n\n` +
+            `🔗 [Buka Foto di Google Drive](${driveLink})\n\n` +
+            `_Tautan foto otomatis tersimpan di tabel Google Sheets Anda._`,
+          {
+            parse_mode: 'Markdown',
+            reply_markup: keyboard,
+            link_preview_options: { is_disabled: true },
+          }
+        );
+      } else {
+        await ctx.reply(
+          `❌ *Gagal Mengunggah Foto ke Google Drive.*\n\n` +
+            `Pastikan koneksi Google Drive Webhook aktif melalui perintah /cekfoto lalu coba kembali.`,
+          { parse_mode: 'Markdown' }
+        );
+      }
       return;
     }
 
