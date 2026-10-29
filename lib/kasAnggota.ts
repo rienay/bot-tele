@@ -432,6 +432,15 @@ export async function catatPembayaranKas(
   };
 }
 
+export interface KasStatusBulanItem {
+  nama: string;
+  jabatan: string;
+  bayar: number;
+  kurang: number;
+  tgl: string;
+  isLunas: boolean;
+}
+
 /**
  * Mengecek status kas seluruh anggota untuk bulan dan tahun tertentu
  */
@@ -441,11 +450,12 @@ export async function cekStatusKasBulan(
 ): Promise<{
   bulan: string;
   tahun: number;
-  sudahBayar: { nama: string; nominal: number; tgl: string }[];
-  belumBayar: { nama: string; jabatan: string }[];
+  sudahBayar: KasStatusBulanItem[];
+  belumBayar: KasStatusBulanItem[];
   totalTerkumpul: number;
   totalTunggakan: number;
   totalAnggotaAktif: number;
+  targetKas: number;
 }> {
   await ensureAnggotaSheets();
   const bulan = normalisasiBulan(bulanQuery) || DAFTAR_BULAN[new Date().getMonth()];
@@ -475,24 +485,48 @@ export async function cekStatusKasBulan(
       rBulan.toLowerCase() === bulan.toLowerCase() &&
       rTahun === tahun
     ) {
-      paidMap.set(rNama.toLowerCase(), { nominal: rNominal, tgl: rTgl });
+      const key = rNama.toLowerCase();
+      const existing = paidMap.get(key);
+      if (existing) {
+        paidMap.set(key, {
+          nominal: existing.nominal + rNominal,
+          tgl: rTgl !== '-' ? rTgl : existing.tgl,
+        });
+      } else {
+        paidMap.set(key, { nominal: rNominal, tgl: rTgl });
+      }
     }
   }
 
-  const sudahBayar: { nama: string; nominal: number; tgl: string }[] = [];
-  const belumBayar: { nama: string; jabatan: string }[] = [];
+  const sudahBayar: KasStatusBulanItem[] = [];
+  const belumBayar: KasStatusBulanItem[] = [];
 
   for (const a of anggotaAktif) {
     const paidInfo = paidMap.get(a.nama.toLowerCase());
-    if (paidInfo) {
-      sudahBayar.push({ nama: a.nama, nominal: paidInfo.nominal, tgl: paidInfo.tgl });
+    const bayar = paidInfo ? paidInfo.nominal : 0;
+    const tgl = paidInfo ? paidInfo.tgl : '-';
+    const kurang = Math.max(0, NOMINAL_IURAN_DEFAULT - bayar);
+    const isLunas = bayar >= NOMINAL_IURAN_DEFAULT;
+
+    const item: KasStatusBulanItem = {
+      nama: a.nama,
+      jabatan: a.jabatan,
+      bayar,
+      kurang,
+      tgl,
+      isLunas,
+    };
+
+    if (isLunas) {
+      sudahBayar.push(item);
     } else {
-      belumBayar.push({ nama: a.nama, jabatan: a.jabatan });
+      belumBayar.push(item);
     }
   }
 
-  const totalTerkumpul = sudahBayar.reduce((acc, c) => acc + c.nominal, 0);
-  const totalTunggakan = belumBayar.length * NOMINAL_IURAN_DEFAULT;
+  const totalTerkumpul = sudahBayar.reduce((acc, c) => acc + c.bayar, 0) + belumBayar.reduce((acc, c) => acc + c.bayar, 0);
+  const totalTunggakan = belumBayar.reduce((acc, c) => acc + c.kurang, 0);
+  const targetKas = anggotaAktif.length * NOMINAL_IURAN_DEFAULT;
 
   return {
     bulan,
@@ -502,6 +536,7 @@ export async function cekStatusKasBulan(
     totalTerkumpul,
     totalTunggakan,
     totalAnggotaAktif: anggotaAktif.length,
+    targetKas,
   };
 }
 
@@ -520,6 +555,8 @@ export async function cekStatusKasAnggota(
   bulanLunas: string[];
   bulanBelum: string[];
   totalBayar: number;
+  totalKurang: number;
+  targetTahun: number;
 }> {
   await ensureAnggotaSheets();
   const daftar = await getDaftarAnggota();
@@ -539,6 +576,8 @@ export async function cekStatusKasAnggota(
       bulanLunas: [],
       bulanBelum: [],
       totalBayar: 0,
+      totalKurang: 0,
+      targetTahun: 0,
     };
   }
 
@@ -593,5 +632,7 @@ export async function cekStatusKasAnggota(
     bulanLunas,
     bulanBelum,
     totalBayar,
+    totalKurang: bulanBelum.length * NOMINAL_IURAN_DEFAULT,
+    targetTahun: 12 * NOMINAL_IURAN_DEFAULT,
   };
 }

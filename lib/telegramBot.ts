@@ -1532,7 +1532,10 @@ async function handleCekKas(ctx: any, query: string = '') {
         msg += res.bulanBelum.length > 0 ? res.bulanBelum.map((b) => ` • ${b}`).join('\n') : ` 🎉 _Semua bulan lunas!_\n`;
 
         msg += `\n━━━━━━━━━━━━━━━━━━━━━\n`;
-        msg += `💰 *Total Kas Telah Dibayar:* *${formatRupiah(res.totalBayar)}*`;
+        msg += `📊 *Ringkasan Iuran Tahun ${res.tahun}:*\n`;
+        msg += `• 💰 *Sudah Bayar:* *${formatRupiah(res.totalBayar)}*\n`;
+        msg += `• 🔻 *Kurang (Tunggakan):* *${formatRupiah(res.totalKurang)}*\n`;
+        msg += `• 🎯 *Target Setahun:* *${formatRupiah(res.targetTahun)}* (${res.bulanLunas.length}/12 bulan lunas)`;
 
         await ctx.reply(msg, { parse_mode: 'Markdown' });
         return;
@@ -1551,7 +1554,10 @@ async function handleCekKas(ctx: any, query: string = '') {
     msg += `🟢 *Sudah Bayar (${result.sudahBayar.length} orang):*\n`;
     if (result.sudahBayar.length > 0) {
       for (const s of result.sudahBayar) {
-        msg += ` • ${s.nama} _(Lunas)_\n`;
+        const extraNote = s.bayar > NOMINAL_IURAN_DEFAULT
+          ? ` _(Lunas + Lebih ${formatRupiah(s.bayar - NOMINAL_IURAN_DEFAULT)})_`
+          : ` _(Lunas)_`;
+        msg += ` • ${s.nama} — *Bayar:* ${formatRupiah(s.bayar)} | *Kurang:* Rp 0${extraNote}\n`;
       }
     } else {
       msg += ` _Belum ada yang membayar_\n`;
@@ -1560,7 +1566,8 @@ async function handleCekKas(ctx: any, query: string = '') {
     msg += `\n🔴 *Belum Bayar (${result.belumBayar.length} orang):*\n`;
     if (result.belumBayar.length > 0) {
       for (const b of result.belumBayar) {
-        msg += ` • ${b.nama} _(${b.jabatan})_\n`;
+        const statusKet = b.bayar > 0 ? `Nyicil` : `Belum Bayar`;
+        msg += ` • ${b.nama} _(${b.jabatan})_\n    └ 💰 *Bayar:* ${formatRupiah(b.bayar)} | 🔻 *Kurang:* ${formatRupiah(b.kurang)} _(${statusKet})_\n`;
       }
     } else {
       msg += ` 🎉 _Semua anggota aktif sudah lunas!_\n`;
@@ -1568,9 +1575,10 @@ async function handleCekKas(ctx: any, query: string = '') {
 
     msg += `\n━━━━━━━━━━━━━━━━━━━━━\n`;
     msg += `📊 *Ringkasan Bulan ${result.bulan}:*\n`;
-    msg += `• 💰 Terkumpul: *${formatRupiah(result.totalTerkumpul)}*\n`;
-    msg += `• 🔻 Tunggakan: *${formatRupiah(result.totalTunggakan)}*\n`;
-    msg += `• 👥 Anggota Aktif: *${result.totalAnggotaAktif} orang*\n\n`;
+    msg += `• 💰 *Sudah Terbayar:* *${formatRupiah(result.totalTerkumpul)}*\n`;
+    msg += `• 🔻 *Kurang (Tunggakan):* *${formatRupiah(result.totalTunggakan)}*\n`;
+    msg += `• 🎯 *Target Kas (100%):* *${formatRupiah(result.targetKas)}*\n`;
+    msg += `• 👥 *Anggota Aktif:* *${result.totalAnggotaAktif} orang* (${result.sudahBayar.length} lunas, ${result.belumBayar.length} belum)\n\n`;
     msg += `💡 _Tips:_ Ketik \`/cekkas [nama]\` (contoh: \`/cekkas Said\`) untuk cek histori per orang, atau \`/cekkas [nama bulan]\`.`;
 
     await ctx.reply(msg, { parse_mode: 'Markdown' });
