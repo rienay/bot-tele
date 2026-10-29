@@ -2742,10 +2742,33 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
       parsed.description = `${parsed.description} ${picTag}`;
     }
 
-    // Simpan segera ke Google Sheets pada sheet buku yang aktif
+    // Upload ke Google Drive TERLEBIH DAHULU (awaited agar tidak terputus di serverless Vercel)
+    let driveLink: string | null = null;
+    try {
+      driveLink = await uploadReceiptToDrive(buffer, fileName, mimeType);
+    } catch (uploadErr) {
+      console.error('Error saat upload foto ke Drive:', uploadErr);
+    }
+
+    if (driveLink) {
+      parsed.noteLink = driveLink;
+    }
+
+    // Simpan ke Google Sheets (sudah otomatis menyertakan link Drive di kolom F)
     const rowNumber = await appendTransaction(parsed, activeBook);
 
     const emoji = parsed.type === 'Pemasukan' ? '🟢' : '🔴';
+    const driveStatusText = driveLink
+      ? `📎 *Foto Nota:* [Lihat Foto di Google Drive](${driveLink})`
+      : `⚠️ *Foto Nota:* _Belum tersimpan di Drive (Ketik /unggahfoto untuk melengkapi)_`;
+
+    const keyboard = new InlineKeyboard();
+    if (driveLink) {
+      keyboard.url('📸 Buka Foto di Drive', driveLink);
+    } else if (rowNumber) {
+      keyboard.text('📤 Unggah Ulang Foto Ini', `reupload_pick:${activeBook}:${rowNumber}`);
+    }
+
     await ctx.reply(
       `🧾 *Transaksi Berhasil Dicatat!*\n\n` +
         `📖 *Buku:* \`${activeBook}\`\n` +
@@ -2754,91 +2777,52 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
         `📂 *Kategori:* ${parsed.category}\n` +
         `💰 *Total Nominal:* ${formatRupiah(parsed.amount)}\n` +
         `📝 *Keterangan:* ${parsed.description}\n\n` +
-        `⏳ _Foto sedang diunggah ke Google Drive di latar belakang..._`,
-      { parse_mode: 'Markdown' }
+        `${driveStatusText}`,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: keyboard,
+        link_preview_options: { is_disabled: true },
+      }
     );
 
     // Monitoring realtime: Notifikasi ke Admin jika penginput adalah anggota
     if (!isAdmin) {
-      (async () => {
-        try {
-          const alertMsg =
-            `🧾 *Pantauan Transaksi Nota Anggota!*\n\n` +
-            `👤 *Penginput:* ${senderName} ${username ? `(${username})` : ''}\n` +
-            `🆔 *ID:* \`${senderId}\`\n` +
-            `📖 *Buku:* \`${activeBook}\`\n` +
-            `📅 *Tanggal:* ${parsed.date}\n` +
-            `${emoji} *Jenis:* ${parsed.type} (${formatRupiah(parsed.amount)})\n` +
-            `📂 *Kategori:* ${parsed.category}\n` +
-            `📝 *Keterangan:* ${parsed.description}\n` +
-            `⏳ _Nota sedang diunggah ke Google Drive..._`;
+      try {
+        const alertMsg =
+          `🧾 *Pantauan Transaksi Nota Anggota!*\n\n` +
+          `👤 *Penginput:* ${senderName} ${username ? `(${username})` : ''}\n` +
+          `🆔 *ID:* \`${senderId}\`\n` +
+          `📖 *Buku:* \`${activeBook}\`\n` +
+          `📅 *Tanggal:* ${parsed.date}\n` +
+          `${emoji} *Jenis:* ${parsed.type} (${formatRupiah(parsed.amount)})\n` +
+          `📂 *Kategori:* ${parsed.category}\n` +
+          `📝 *Keterangan:* ${parsed.description}\n` +
+          (driveLink ? `📎 [Lihat Foto Nota di Drive](${driveLink})` : `⚠️ _Foto belum tersimpan di Drive_`);
 
-          await ctx.api.sendMessage(adminId, alertMsg, { parse_mode: 'Markdown' });
-        } catch (adminErr) {
-          console.error('Gagal mengirim notif awal nota anggota ke Admin:', adminErr);
-        }
-      })();
+        await ctx.api.sendMessage(adminId, alertMsg, {
+          parse_mode: 'Markdown',
+          link_preview_options: { is_disabled: true },
+        });
+      } catch (adminErr) {
+        console.error('Gagal mengirim notif awal nota anggota ke Admin:', adminErr);
+      }
     }
 
-    // Upload ke Drive & rekap di latar belakang
-    (async () => {
-      // Rekap singkat
-      try {
-        const summary = await getMonthSummary(undefined, undefined, activeBook);
-        const saldoLabel = summary.saldo >= 0 ? '💰 *Sisa:*' : '🔻 *Defisit:*';
-        await ctx.reply(
-          `━━━━━━━━━━━━━━━━━━━━━\n` +
-            `📊 *Rekap Buku [${activeBook}]:*\n` +
-            `🟢 Masuk: ${formatRupiah(summary.totalPemasukan)}\n` +
-            `🔴 Keluar: ${formatRupiah(summary.totalPengeluaran)}\n` +
-            `${saldoLabel} ${formatRupiah(Math.abs(summary.saldo))}`,
-          { parse_mode: 'Markdown' }
-        );
-      } catch {
-        // Abaikan jika rekap background gagal
-      }
-
-      // Upload ke Google Drive
-      try {
-        const driveLink = await uploadReceiptToDrive(buffer, fileName, mimeType);
-        if (driveLink) {
-          if (rowNumber) {
-            await updateTransactionNoteLink(rowNumber, driveLink, activeBook).catch(console.error);
-          }
-          await ctx.reply(
-            `📎 *Foto Tersimpan di Google Drive!*\n` +
-              `📖 *Buku:* ${activeBook}\n` +
-              `📝 *Item:* ${parsed.description} (${formatRupiah(parsed.amount)})\n` +
-              `🔗 [Buka Foto di Google Drive](${driveLink})`,
-            { parse_mode: 'Markdown', link_preview_options: { is_disabled: true } }
-          ).catch(console.error);
-
-          // Alert link nota ke Admin jika penginput adalah anggota
-          if (!isAdmin) {
-            ctx.api.sendMessage(
-              adminId,
-              `📎 *Foto Nota Anggota Berhasil Tersimpan!*\n\n` +
-                `👤 *Penginput:* ${senderName} ${username ? `(${username})` : ''}\n` +
-                `📖 *Buku:* \`${activeBook}\`\n` +
-                `📝 *Item:* ${parsed.description}\n` +
-                `🔗 [Lihat Foto Nota di Google Drive](${driveLink})`,
-              { parse_mode: 'Markdown', link_preview_options: { is_disabled: true } }
-            ).catch(console.error);
-          }
-        } else {
-          await ctx.reply(
-            `⚠️ *Peringatan Google Drive:*\n` +
-              `Transaksi berhasil dicatat ke Sheets, tetapi foto nota *gagal tersimpan ke Google Drive*.\n\n` +
-              `💡 *Penyebab:* Folder Drive belum dibagikan ke email robot:\n` +
-              `\`${process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || 'bot-uang-dkc@catat-keuangan-509403.iam.gserviceaccount.com'}\`\n\n` +
-              `Silakan buka folder Google Drive Anda lalu share folder tersebut ke email robot dengan akses *Editor*.`,
-            { parse_mode: 'Markdown' }
-          ).catch(console.error);
-        }
-      } catch (uploadErr) {
-        console.error('Error saat upload background ke Drive:', uploadErr);
-      }
-    })();
+    // Rekap singkat buku aktif (awaited)
+    try {
+      const summary = await getMonthSummary(undefined, undefined, activeBook);
+      const saldoLabel = summary.saldo >= 0 ? '💰 *Sisa:*' : '🔻 *Defisit:*';
+      await ctx.reply(
+        `━━━━━━━━━━━━━━━━━━━━━\n` +
+          `📊 *Rekap Buku [${activeBook}]:*\n` +
+          `🟢 Masuk: ${formatRupiah(summary.totalPemasukan)}\n` +
+          `🔴 Keluar: ${formatRupiah(summary.totalPengeluaran)}\n` +
+          `${saldoLabel} ${formatRupiah(Math.abs(summary.saldo))}`,
+        { parse_mode: 'Markdown' }
+      );
+    } catch {
+      // Abaikan jika rekap background gagal
+    }
   } catch (error: any) {
     console.error('Error processing receipt:', error);
     const isRateLimit =
