@@ -2336,58 +2336,98 @@ bot.on('message:text', async (ctx) => {
         );
         await ctx.replyWithChatAction('upload_photo');
 
-        const file = await ctx.api.getFile(replyFileId);
-        if (file.file_path) {
+        try {
+          const file = await ctx.api.getFile(replyFileId);
+          if (!file.file_path) {
+            throw new Error('Tidak dapat mengunduh file foto dari Telegram.');
+          }
+
           const fileUrl = `https://api.telegram.org/file/bot${process.env.TELEGRAM_BOT_TOKEN}/${file.file_path}`;
           const res = await fetch(fileUrl);
-          if (res.ok) {
-            const arrayBuffer = await res.arrayBuffer();
-            const buffer = Buffer.from(arrayBuffer);
-
-            // 1. Baca isi foto dengan Gemini untuk tahu ini transaksi yang mana
-            const parsed = await parseReceiptImage(buffer, replyMimeType, repMsg.caption);
-
-            // 2. Cari transaksi yang cocok di Google Sheets (di buku aktif, atau di buku lain)
-            const matchResult = await findMatchingTransactionRowAcrossBooks(activeBook, {
-              amount: parsed?.amount,
-              description: parsed?.description,
-            });
-
-            if (matchResult) {
-              const { item: matchingRow, bookName: targetBook } = matchResult;
-              const driveLink = await uploadReceiptToDrive(buffer, replyFileName, replyMimeType);
-              if (driveLink) {
-                await updateTransactionNoteLink(matchingRow.rowNumber, driveLink, targetBook);
-
-                const keyboard = new InlineKeyboard()
-                  .url('📸 Buka Foto di Drive', driveLink)
-                  .text('📸 Cek Foto Lainnya', `cekfoto_refresh:${targetBook}`);
-
-                await ctx.reply(
-                  `✅ *Foto Lama Berhasil Ditautkan via Reply!*\n\n` +
-                    `📖 *Buku Kegiatan:* \`${targetBook}\` _(Tab Sheets: ${targetBook})_\n` +
-                    `📝 *Transaksi:* *${matchingRow.description}*\n` +
-                    `💰 *Nominal:* ${formatRupiah(matchingRow.amount)}\n` +
-                    `📌 *Baris Sheets:* #${matchingRow.rowNumber}\n\n` +
-                    `🔗 [Buka Foto di Google Drive](${driveLink})\n\n` +
-                    `_Hanya tautan foto yang dicatat ke Google Sheets di tab \`${targetBook}\`, tidak ada transaksi dobel!_`,
-                  {
-                    parse_mode: 'Markdown',
-                    reply_markup: keyboard,
-                    link_preview_options: { is_disabled: true },
-                  }
-                );
-                return;
-              }
-            } else {
-              await ctx.reply(
-                `⚠️ Foto terbaca (Nominal: ${parsed ? formatRupiah(parsed.amount) : '?'}), namun tidak ditemukan transaksi yang cocok di buku \`${activeBook}\` maupun buku lainnya.\n\n` +
-                  `💡 *Tips:* Anda bisa gunakan menu /unggahfoto untuk memilih baris transaksi secara manual.`,
-                { parse_mode: 'Markdown' }
-              );
-              return;
-            }
+          if (!res.ok) {
+            throw new Error(`Gagal fetch file dari Telegram: ${res.statusText}`);
           }
+
+          const arrayBuffer = await res.arrayBuffer();
+          const buffer = Buffer.from(arrayBuffer);
+
+          // 1. Eksekusi OCR Gemini dan Upload ke Drive secara paralel (memangkas waktu 50%)
+          const [parsed, driveLink] = await Promise.all([
+            parseReceiptImage(buffer, replyMimeType, repMsg.caption).catch((err) => {
+              console.warn('Gagal parseReceiptImage saat reply:', err);
+              return null;
+            }),
+            uploadReceiptToDrive(buffer, replyFileName, replyMimeType).catch((err) => {
+              console.error('Gagal uploadReceiptToDrive saat reply:', err);
+              return null;
+            }),
+          ]);
+
+          // Tentukan kriteria pencarian dari hasil Gemini atau caption pesan asli
+          const searchAmount = parsed?.amount;
+          const searchDesc = parsed?.description || repMsg.caption;
+
+          // 2. Cari transaksi yang cocok di Google Sheets (di buku aktif, atau lintas tab)
+          const matchResult = await findMatchingTransactionRowAcrossBooks(activeBook, {
+            amount: searchAmount,
+            description: searchDesc,
+          });
+
+          if (matchResult && driveLink) {
+            const { item: matchingRow, bookName: targetBook } = matchResult;
+            await updateTransactionNoteLink(matchingRow.rowNumber, driveLink, targetBook);
+
+            const keyboard = new InlineKeyboard()
+              .url('📸 Buka Foto di Drive', driveLink)
+              .text('📸 Cek Foto Lainnya', `cekfoto_refresh:${targetBook}`);
+
+            await ctx.reply(
+              `✅ *Foto Nota Berhasil Ditautkan via Reply!*\n\n` +
+                `📖 *Buku Kegiatan:* \`${targetBook}\` _(Tab Sheets: ${targetBook})_\n` +
+                `📝 *Transaksi:* *${matchingRow.description}*\n` +
+                `💰 *Nominal:* ${formatRupiah(matchingRow.amount)}\n` +
+                `📌 *Baris Sheets:* #${matchingRow.rowNumber}\n\n` +
+                `🔗 [Buka Foto di Google Drive](${driveLink})\n\n` +
+                `_Tautan foto berhasil dicatat di Google Sheets pada tab \`${targetBook}\` Kolom F tanpa membuat transaksi dobel!_`,
+              {
+                parse_mode: 'Markdown',
+                reply_markup: keyboard,
+                link_preview_options: { is_disabled: true },
+              }
+            );
+            return;
+          } else if (driveLink) {
+            // Upload ke Drive sukses tapi baris belum terdeteksi otomatis
+            const keyboard = new InlineKeyboard()
+              .url('📸 Buka Foto di Drive', driveLink)
+              .text(`📤 Pilih Baris di [${activeBook}]`, `reupload_list:${activeBook}`);
+
+            await ctx.reply(
+              `📸 *Foto Berhasil Disimpan ke Google Drive!*\n\n` +
+                `🔗 [Lihat Foto di Google Drive](${driveLink})\n\n` +
+                `⚠️ Nominal yang terbaca (${searchAmount ? formatRupiah(searchAmount) : '?'}) belum cocok otomatis dengan daftar transaksi di tab \`${activeBook}\`.\n\n` +
+                `💡 *Solusi Mudah:* Klik tombol di bawah atau ketik /unggahfoto untuk memilih baris transaksi secara langsung.`,
+              {
+                parse_mode: 'Markdown',
+                reply_markup: keyboard,
+                link_preview_options: { is_disabled: true },
+              }
+            );
+            return;
+          } else {
+            await ctx.reply(
+              `❌ Gagal mengunggah foto ke Google Drive. Silakan periksa koneksi Drive dengan mengetik /cekfoto.`,
+              { parse_mode: 'Markdown' }
+            );
+            return;
+          }
+        } catch (replyErr: any) {
+          console.error('Error saat proses reply upload:', replyErr);
+          await ctx.reply(
+            `❌ Terjadi kendala saat memproses foto: ${replyErr?.message || replyErr}\n` +
+              `💡 Anda bisa gunakan perintah /unggahfoto untuk memilih baris transaksi secara manual.`
+          );
+          return;
         }
       }
     }
@@ -2923,10 +2963,34 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
       }
     }
 
-    // OCR dengan Gemini
-    const parsed = await parseReceiptImage(buffer, mimeType, ctx.message.caption);
+    // OCR Gemini dan Upload ke Google Drive secara paralel (memangkas waktu 50%)
+    const [parsed, driveLink] = await Promise.all([
+      parseReceiptImage(buffer, mimeType, ctx.message.caption).catch((err) => {
+        console.warn('Gagal parseReceiptImage:', err);
+        return null;
+      }),
+      uploadReceiptToDrive(buffer, fileName, mimeType).catch((uploadErr) => {
+        console.error('Error saat upload foto ke Drive:', uploadErr);
+        return null;
+      }),
+    ]);
 
     if (!parsed) {
+      if (driveLink) {
+        const keyboard = new InlineKeyboard()
+          .url('📸 Buka Foto di Drive', driveLink)
+          .text(`📤 Hubungkan Manual`, `reupload_list:${activeBook}`);
+
+        await ctx.reply(
+          `📸 *Foto Berhasil Disimpan di Drive!*\n\n` +
+            `🔗 [Lihat Foto di Google Drive](${driveLink})\n\n` +
+            `⚠️ Foto tidak terdeteksi otomatis sebagai nota belanja/transfer (atau teks buram).\n` +
+            `💡 Anda bisa klik tombol di bawah untuk menautkan foto ini ke salah satu transaksi lama.`,
+          { parse_mode: 'Markdown', reply_markup: keyboard }
+        );
+        return;
+      }
+
       await ctx.reply(
         '⚠️ Gambar tidak terdeteksi sebagai nota/struk belanja atau bukti transfer yang valid. Mohon pastikan foto cukup jelas dan mencakup nominal transaksi.'
       );
@@ -2943,14 +3007,6 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
     const picTag = username ? `(PIC: ${username})` : `(PIC: ${senderName})`;
     if (!parsed.description.toLowerCase().includes('pic:')) {
       parsed.description = `${parsed.description} ${picTag}`;
-    }
-
-    // Upload ke Google Drive TERLEBIH DAHULU (awaited agar tidak terputus di serverless Vercel)
-    let driveLink: string | null = null;
-    try {
-      driveLink = await uploadReceiptToDrive(buffer, fileName, mimeType);
-    } catch (uploadErr) {
-      console.error('Error saat upload foto ke Drive:', uploadErr);
     }
 
     if (driveLink) {
