@@ -17,6 +17,7 @@ import {
   getRecentTransactionsWithNotes,
   getTransactionByRow,
   findMatchingTransactionRow,
+  findMatchingTransactionRowAcrossBooks,
 } from './googleSheets';
 import {
   getDaftarAnggota,
@@ -1810,7 +1811,10 @@ async function handleCekFoto(ctx: any, customBook?: string) {
     statusDriveText = '🔴 Belum Dikonfigurasi';
   }
 
-  const items = await getRecentTransactionsWithNotes(activeBook, 6);
+  const [items, allBooks] = await Promise.all([
+    getRecentTransactionsWithNotes(activeBook, 6),
+    getAllSheetBooks().catch(() => [DEFAULT_BOOK_NAME]),
+  ]);
 
   if (items.length === 0) {
     const keyboard = new InlineKeyboard()
@@ -1818,15 +1822,22 @@ async function handleCekFoto(ctx: any, customBook?: string) {
       .text('📡 Tes Koneksi Drive', 'cekfoto_test')
       .row();
 
+    // Tombol untuk beralih ke tab buku lainnya di spreadsheet
+    const otherBooks = allBooks.filter((b) => b.toLowerCase() !== activeBook.toLowerCase());
+    if (otherBooks.length > 0) {
+      otherBooks.forEach((b) => keyboard.text(`📖 Buka Buku [${b}]`, `cekfoto_refresh:${b}`));
+      keyboard.row();
+    }
+
     if (driveConfig.hasFolder) {
       keyboard.url('📁 Buka Folder Drive', driveConfig.folderUrl);
     }
 
     await ctx.reply(
       `📸 *Status Foto Nota & Bukti Transaksi*\n\n` +
-        `📖 *Buku:* \`${activeBook}\`\n` +
+        `📖 *Buku Kegiatan:* \`${activeBook}\` _(Tab Sheets: ${activeBook})_\n` +
         `📡 *Koneksi Drive:* ${statusDriveText}\n\n` +
-        `_Belum ada transaksi yang tercatat di buku ini._\n\n` +
+        `_Belum ada transaksi yang tercatat di tab buku ini._\n\n` +
         `💡 *Tips:* Kirim foto struk/nota kasir ke bot ini untuk otomatis membaca transaksi dan menyimpan buktinya ke Google Drive!`,
       {
         parse_mode: 'Markdown',
@@ -1852,7 +1863,7 @@ async function handleCekFoto(ctx: any, customBook?: string) {
       photoStatus = `✅ [Buka Foto di Drive](${item.noteLink})`;
     } else {
       countNoPhoto++;
-      photoStatus = `❌ _Belum ada foto / gagal unggah_`;
+      photoStatus = `❌ _Belum ada foto / link kosong_`;
     }
 
     textList +=
@@ -1867,7 +1878,14 @@ async function handleCekFoto(ctx: any, customBook?: string) {
     .row();
 
   if (countNoPhoto > 0) {
-    keyboard.text('📤 Unggah Ulang Foto Nota', `reupload_list:${activeBook}`).row();
+    keyboard.text(`📤 Unggah Ulang Foto (${activeBook})`, `reupload_list:${activeBook}`).row();
+  }
+
+  // Tombol untuk beralih ke tab buku lainnya di spreadsheet
+  const otherBooks = allBooks.filter((b) => b.toLowerCase() !== activeBook.toLowerCase());
+  if (otherBooks.length > 0) {
+    otherBooks.forEach((b) => keyboard.text(`📖 Buka Buku [${b}]`, `cekfoto_refresh:${b}`));
+    keyboard.row();
   }
 
   if (driveConfig.hasFolder) {
@@ -1881,7 +1899,7 @@ async function handleCekFoto(ctx: any, customBook?: string) {
 
   await ctx.reply(
     `📸 *Status Foto Nota & Bukti Transaksi*\n\n` +
-      `📖 *Buku Kegiatan:* \`${activeBook}\`\n` +
+      `📖 *Buku Kegiatan:* \`${activeBook}\` _(Tab Sheets: ${activeBook})_\n` +
       `📡 *Koneksi Drive:* ${statusDriveText}\n\n` +
       `━━━━━━━━━━━━━━━━━━━━━\n` +
       textList +
@@ -1903,21 +1921,30 @@ async function handlePilihUnggahUlang(ctx: any, customBook?: string) {
   const chatId = ctx.chat?.id || ctx.from?.id;
   const activeBook = customBook?.trim() || (await getUserActiveBook(chatId));
 
-  const items = await getRecentTransactionsWithNotes(activeBook, 15);
+  const [items, allBooks] = await Promise.all([
+    getRecentTransactionsWithNotes(activeBook, 15),
+    getAllSheetBooks().catch(() => [DEFAULT_BOOK_NAME]),
+  ]);
   const itemsWithoutPhoto = items.filter((it) => !it.hasPhoto);
 
+  const keyboard = new InlineKeyboard();
+
   if (itemsWithoutPhoto.length === 0) {
-    const keyboard = new InlineKeyboard().text('📸 Cek Status Foto', `cekfoto_refresh:${activeBook}`);
+    keyboard.text('📸 Cek Status Foto', `cekfoto_refresh:${activeBook}`);
+    const otherBooks = allBooks.filter((b) => b.toLowerCase() !== activeBook.toLowerCase());
+    if (otherBooks.length > 0) {
+      keyboard.row();
+      otherBooks.forEach((b) => keyboard.text(`📁 Cek Buku [${b}]`, `reupload_list:${b}`));
+    }
+
     await ctx.reply(
       `🎉 *Luar Biasa!*\n` +
-        `Semua transaksi di buku \`${activeBook}\` sudah memiliki bukti foto nota di Google Drive!\n\n` +
-        `Ketik /cekfoto untuk melihat daftar transaksi dan tautan foto.`,
+        `Semua transaksi di tab buku \`${activeBook}\` sudah memiliki bukti foto nota di Google Drive!\n\n` +
+        (otherBooks.length > 0 ? `Anda dapat memeriksa tab buku lain melalui tombol di bawah:` : `Ketik /cekfoto untuk melihat daftar transaksi dan tautan foto.`),
       { parse_mode: 'Markdown', reply_markup: keyboard }
     );
     return;
   }
-
-  const keyboard = new InlineKeyboard();
 
   itemsWithoutPhoto.slice(0, 8).forEach((it) => {
     const descShort = it.description.length > 22 ? it.description.slice(0, 20) + '..' : it.description;
@@ -1925,11 +1952,17 @@ async function handlePilihUnggahUlang(ctx: any, customBook?: string) {
     keyboard.text(btnLabel, `reupload_pick:${activeBook}:${it.rowNumber}`).row();
   });
 
+  const otherBooks = allBooks.filter((b) => b.toLowerCase() !== activeBook.toLowerCase());
+  if (otherBooks.length > 0) {
+    otherBooks.forEach((b) => keyboard.text(`📁 Cek Buku [${b}]`, `reupload_list:${b}`));
+    keyboard.row();
+  }
+
   keyboard.text('⬅️ Kembali ke Cek Foto', `cekfoto_refresh:${activeBook}`).row();
 
   await ctx.reply(
     `📤 *Unggah Ulang Foto Nota*\n\n` +
-      `📖 *Buku Kegiatan:* \`${activeBook}\`\n\n` +
+      `📖 *Buku Kegiatan:* \`${activeBook}\` _(Tab Sheets: ${activeBook})_\n\n` +
       `Ditemukan *${itemsWithoutPhoto.length} transaksi* yang belum memiliki foto bukti di Google Drive.\n` +
       `Silakan *klik salah satu tombol transaksi* di bawah untuk mengirimkan fotonya:`,
     { parse_mode: 'Markdown', reply_markup: keyboard }
@@ -2314,29 +2347,30 @@ bot.on('message:text', async (ctx) => {
             // 1. Baca isi foto dengan Gemini untuk tahu ini transaksi yang mana
             const parsed = await parseReceiptImage(buffer, replyMimeType, repMsg.caption);
 
-            // 2. Cari transaksi yang cocok di Google Sheets
-            const matchingRow = await findMatchingTransactionRow(activeBook, {
+            // 2. Cari transaksi yang cocok di Google Sheets (di buku aktif, atau di buku lain)
+            const matchResult = await findMatchingTransactionRowAcrossBooks(activeBook, {
               amount: parsed?.amount,
               description: parsed?.description,
             });
 
-            if (matchingRow) {
+            if (matchResult) {
+              const { item: matchingRow, bookName: targetBook } = matchResult;
               const driveLink = await uploadReceiptToDrive(buffer, replyFileName, replyMimeType);
               if (driveLink) {
-                await updateTransactionNoteLink(matchingRow.rowNumber, driveLink, activeBook);
+                await updateTransactionNoteLink(matchingRow.rowNumber, driveLink, targetBook);
 
                 const keyboard = new InlineKeyboard()
                   .url('📸 Buka Foto di Drive', driveLink)
-                  .text('📸 Cek Foto Lainnya', `cekfoto_refresh:${activeBook}`);
+                  .text('📸 Cek Foto Lainnya', `cekfoto_refresh:${targetBook}`);
 
                 await ctx.reply(
                   `✅ *Foto Lama Berhasil Ditautkan via Reply!*\n\n` +
-                    `📖 *Buku:* \`${activeBook}\`\n` +
+                    `📖 *Buku Kegiatan:* \`${targetBook}\` _(Tab Sheets: ${targetBook})_\n` +
                     `📝 *Transaksi:* *${matchingRow.description}*\n` +
                     `💰 *Nominal:* ${formatRupiah(matchingRow.amount)}\n` +
                     `📌 *Baris Sheets:* #${matchingRow.rowNumber}\n\n` +
                     `🔗 [Buka Foto di Google Drive](${driveLink})\n\n` +
-                    `_Hanya tautan foto yang dimasukkan ke Google Sheets, tidak ada transaksi dobel!_`,
+                    `_Hanya tautan foto yang dicatat ke Google Sheets di tab \`${targetBook}\`, tidak ada transaksi dobel!_`,
                   {
                     parse_mode: 'Markdown',
                     reply_markup: keyboard,
@@ -2347,7 +2381,7 @@ bot.on('message:text', async (ctx) => {
               }
             } else {
               await ctx.reply(
-                `⚠️ Foto terbaca (Nominal: ${parsed ? formatRupiah(parsed.amount) : '?'}), namun tidak ditemukan transaksi yang cocok di buku \`${activeBook}\`.\n\n` +
+                `⚠️ Foto terbaca (Nominal: ${parsed ? formatRupiah(parsed.amount) : '?'}), namun tidak ditemukan transaksi yang cocok di buku \`${activeBook}\` maupun buku lainnya.\n\n` +
                   `💡 *Tips:* Anda bisa gunakan menu /unggahfoto untuk memilih baris transaksi secara manual.`,
                 { parse_mode: 'Markdown' }
               );
@@ -2846,30 +2880,31 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
           { parse_mode: 'Markdown' }
         );
 
-        // Cari transaksi yang cocok di Sheets
-        const matchingRow = await findMatchingTransactionRow(targetBook, {
+        // Cari transaksi yang cocok di Sheets (di targetBook atau buku lain)
+        const matchResult = await findMatchingTransactionRowAcrossBooks(targetBook, {
           amount: parsedNominal,
           description: parsedDesc,
           date: parsedDate,
         });
 
-        if (matchingRow) {
+        if (matchResult) {
+          const { item: matchingRow, bookName: finalBook } = matchResult;
           const driveLink = await uploadReceiptToDrive(buffer, fileName, mimeType);
           if (driveLink) {
-            await updateTransactionNoteLink(matchingRow.rowNumber, driveLink, targetBook);
+            await updateTransactionNoteLink(matchingRow.rowNumber, driveLink, finalBook);
 
             const keyboard = new InlineKeyboard()
               .url('📸 Buka Foto di Drive', driveLink)
-              .text('📸 Cek Foto Lainnya', `cekfoto_refresh:${targetBook}`);
+              .text('📸 Cek Foto Lainnya', `cekfoto_refresh:${finalBook}`);
 
             await ctx.reply(
               `✅ *Foto Nota Berhasil Ditautkan via Reply!*\n\n` +
-                `📖 *Buku:* \`${targetBook}\`\n` +
+                `📖 *Buku Kegiatan:* \`${finalBook}\` _(Tab Sheets: ${finalBook})_\n` +
                 `📝 *Transaksi:* *${matchingRow.description}*\n` +
                 `💰 *Nominal:* ${formatRupiah(matchingRow.amount)}\n` +
                 `📌 *Baris Sheets:* #${matchingRow.rowNumber}\n\n` +
                 `🔗 [Buka Foto di Google Drive](${driveLink})\n\n` +
-                `_Tautan foto berhasil dicatat di Google Sheets (Kolom F) tanpa membuat transaksi dobel!_`,
+                `_Tautan foto berhasil dicatat di Google Sheets pada tab \`${finalBook}\` Kolom F tanpa membuat transaksi dobel!_`,
               {
                 parse_mode: 'Markdown',
                 reply_markup: keyboard,
@@ -2939,13 +2974,14 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
 
     await ctx.reply(
       `🧾 *Transaksi Berhasil Dicatat!*\n\n` +
-        `📖 *Buku:* \`${activeBook}\`\n` +
+        `📖 *Buku Kegiatan:* \`${activeBook}\` _(Tersimpan di Tab Sheets: ${activeBook})_\n` +
         `📅 *Tanggal:* ${parsed.date}\n` +
         `${emoji} *Jenis:* ${parsed.type}\n` +
         `📂 *Kategori:* ${parsed.category}\n` +
         `💰 *Total Nominal:* ${formatRupiah(parsed.amount)}\n` +
         `📝 *Keterangan:* ${parsed.description}\n\n` +
-        `${driveStatusText}`,
+        `${driveStatusText}\n\n` +
+        `💡 _Tips: Jika ingin mencatat transaksi ke buku/tab lain (seperti tab pwd), ketik /pwd atau /buku._`,
       {
         parse_mode: 'Markdown',
         reply_markup: keyboard,

@@ -1044,6 +1044,41 @@ export async function findMatchingTransactionRow(
   }
 }
 
+/**
+ * Mencari baris transaksi di semua buku/sheet jika tidak ditemukan di sheet utama
+ */
+export async function findMatchingTransactionRowAcrossBooks(
+  primarySheet: string,
+  criteria: {
+    amount?: number;
+    description?: string;
+    date?: string;
+  }
+): Promise<{ item: RecentTransactionItem; bookName: string } | null> {
+  // 1. Coba di primarySheet (buku aktif) terlebih dahulu
+  const foundPrimary = await findMatchingTransactionRow(primarySheet, criteria);
+  if (foundPrimary) {
+    return { item: foundPrimary, bookName: primarySheet };
+  }
+
+  // 2. Jika tidak ditemukan, cari di semua sheet buku lainnya
+  try {
+    const allBooks = await getAllSheetBooks();
+    for (const book of allBooks) {
+      if (book.toLowerCase() === primarySheet.toLowerCase()) continue;
+      const foundOther = await findMatchingTransactionRow(book, criteria);
+      if (foundOther) {
+        return { item: foundOther, bookName: book };
+      }
+    }
+  } catch (err) {
+    console.warn('Gagal mencari di sheet lain:', err);
+  }
+
+  return null;
+}
+
+
 
 
 
