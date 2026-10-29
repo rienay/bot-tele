@@ -5,7 +5,11 @@ async function testDrive() {
   try {
     const dummyBuffer = Buffer.from('test dummy receipt');
     const link = await uploadReceiptToDrive(dummyBuffer, 'test_dummy.txt', 'text/plain');
-    console.log('✅ Google Drive Berhasil! Link:', link);
+    if (link) {
+      console.log('✅ Google Drive Berhasil! Link:', link);
+    } else {
+      console.error('❌ Google Drive Gagal: Tidak ada link yang dikembalikan (cek pesan warning di atas).');
+    }
   } catch (err: any) {
     console.error('❌ Google Drive Gagal:', err.message);
   }

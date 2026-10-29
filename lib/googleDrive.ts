@@ -3,6 +3,19 @@ import { Readable } from 'stream';
 import { getGoogleAuth } from './googleAuth';
 
 /**
+ * Mengekstrak ID folder dari URL atau string mentah
+ * Contoh input: 'https://drive.google.com/drive/folders/1y6BDJs8FLWlE8Z0vgIis_8agiNzcRKpy?usp=drive_link'
+ * Output: '1y6BDJs8FLWlE8Z0vgIis_8agiNzcRKpy'
+ */
+export function extractFolderId(rawIdOrUrl?: string): string {
+  if (!rawIdOrUrl) return '';
+  const trimmed = rawIdOrUrl.trim();
+  const match = trimmed.match(/folders\/([a-zA-Z0-9_-]+)/);
+  if (match) return match[1];
+  return trimmed.split('?')[0].replace(/\/+$/, '');
+}
+
+/**
  * Mengunggah foto nota ke Google Drive.
  * Mendukung 2 metode:
  * 1. Webhook Google Apps Script (Sangat direkomendasikan untuk akun Gmail personal gratis agar memakai kuota 15GB pemilik)
@@ -14,7 +27,7 @@ export async function uploadReceiptToDrive(
   mimeType: string = 'image/jpeg'
 ): Promise<string | null> {
   const gasWebhookUrl = process.env.GOOGLE_DRIVE_GAS_URL;
-  const folderId = process.env.GOOGLE_DRIVE_FOLDER_ID;
+  const folderId = extractFolderId(process.env.GOOGLE_DRIVE_FOLDER_ID);
 
   // Metode 1: Jika ada Google Apps Script Web App URL
   if (gasWebhookUrl && gasWebhookUrl.trim() !== '') {
