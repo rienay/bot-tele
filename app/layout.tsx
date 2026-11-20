@@ -2,7 +2,7 @@ import type { Metadata, Viewport } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: '🌸 Dashboard Keuangan & Inventaris DKC',
+  title: 'Dashboard Keuangan & Inventaris DKC',
   description: 'Portal akses catatan keuangan & inventaris logistik terbuka Kwarcab 11.01 Cilacap.',
 };
 

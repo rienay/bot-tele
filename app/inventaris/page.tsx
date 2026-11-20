@@ -320,11 +320,9 @@ export default function InventarisPage() {
 
           <div className="word-nav-tabs">
             <Link href="/" className="word-nav-link" title="Buku Kas & Keuangan">
-              <span>💰</span>
               <span className="nav-text">Keuangan</span>
             </Link>
             <Link href="/inventaris" className="word-nav-link active" title="Inventaris Barang">
-              <span>📦</span>
               <span className="nav-text">Inventaris</span>
             </Link>
             <a
@@ -334,7 +332,6 @@ export default function InventarisPage() {
               className="word-nav-bot"
               title="Input via Bot Telegram"
             >
-              <span>🤖</span>
               <span className="nav-text">Bot Tele</span>
             </a>
           </div>
@@ -361,11 +358,9 @@ export default function InventarisPage() {
                 className="word-btn word-btn-secondary"
                 title="Segarkan data terbaru"
               >
-                <span>{isRefreshing ? '⏳' : '🔄'}</span>
                 <span>{isRefreshing ? 'Menyinkronkan...' : 'Segarkan Data'}</span>
               </button>
               <button onClick={() => setShowAddModal(true)} className="word-btn word-btn-primary">
-                <span>➕</span>
                 <span>Tambah Barang</span>
               </button>
             </div>
@@ -412,8 +407,8 @@ export default function InventarisPage() {
             <div className="word-stat-card condition-stat">
               <div className="word-stat-label">Kondisi Barang</div>
               <div className="word-stat-condition-row">
-                <span className="cond-badge baik">🟢 {stats.baikCount} Baik</span>
-                <span className="cond-badge rusak">🔴 {stats.rusakCount} Rusak/Perbaikan</span>
+                <span className="cond-badge baik">{stats.baikCount} Baik</span>
+                <span className="cond-badge rusak">{stats.rusakCount} Rusak/Perbaikan</span>
               </div>
             </div>
           </div>
@@ -427,7 +422,7 @@ export default function InventarisPage() {
               onClick={() => setSelectedUnit('Semua')}
               className={`word-tab-btn ${selectedUnit === 'Semua' ? 'active' : ''}`}
             >
-              <span>🏛️ Semua Unit</span>
+              <span>Semua Unit</span>
               <span className="tab-count">{items.length}</span>
             </button>
             {DAFTAR_UNIT.map((u) => {
@@ -449,7 +444,6 @@ export default function InventarisPage() {
           {/* Filter Controls Row */}
           <div className="word-filter-controls">
             <div className="word-search-wrapper">
-              <span className="search-icon">🔍</span>
               <input
                 type="text"
                 value={searchQuery}
@@ -459,7 +453,7 @@ export default function InventarisPage() {
               />
               {searchQuery && (
                 <button onClick={() => setSearchQuery('')} className="search-clear-btn" title="Hapus pencarian">
-                  ✕
+                  &times;
                 </button>
               )}
             </div>
@@ -473,10 +467,10 @@ export default function InventarisPage() {
                 className="word-select"
               >
                 <option value="Semua">Semua Kondisi</option>
-                <option value="Baik">🟢 Baik</option>
-                <option value="Rusak Ringan">🟡 Rusak Ringan</option>
-                <option value="Rusak Berat">🔴 Rusak Berat</option>
-                <option value="Hilang">⚪ Hilang</option>
+                <option value="Baik">Baik</option>
+                <option value="Rusak Ringan">Rusak Ringan</option>
+                <option value="Rusak Berat">Rusak Berat</option>
+                <option value="Hilang">Hilang</option>
               </select>
             </div>
 
@@ -500,11 +494,9 @@ export default function InventarisPage() {
             {/* Tombol Export / Print */}
             <div className="word-export-group">
               <button onClick={exportCsv} className="word-btn word-btn-outline" title="Download file CSV untuk Microsoft Excel">
-                <span>📥</span>
                 <span>Unduh CSV</span>
               </button>
               <button onClick={() => window.print()} className="word-btn word-btn-outline" title="Cetak dokumen atau Simpan PDF">
-                <span>🖨️</span>
                 <span>Cetak</span>
               </button>
             </div>
@@ -521,7 +513,7 @@ export default function InventarisPage() {
                 {searchQuery && ` • Kata kunci: "${searchQuery}"`}
               </span>
               <button onClick={handleResetFilters} className="word-reset-btn">
-                ✕ Reset Filter
+                Reset Filter
               </button>
             </div>
           )}
@@ -530,7 +522,7 @@ export default function InventarisPage() {
         {/* Status Error */}
         {error && (
           <div className="word-error-box">
-            <span>⚠️ {error}</span>
+            <span>Perhatian: {error}</span>
             <button onClick={() => fetchData()} className="word-retry-btn">
               Coba Lagi
             </button>
@@ -550,7 +542,6 @@ export default function InventarisPage() {
               className={`view-toggle-btn ${mobileView === 'card' ? 'active' : ''}`}
               title="Tampilan Kartu Ringkas (Optimal di Layar HP)"
             >
-              <span>📱</span>
               <span>Kartu</span>
             </button>
             <button
@@ -559,7 +550,6 @@ export default function InventarisPage() {
               className={`view-toggle-btn ${mobileView === 'table' ? 'active' : ''}`}
               title="Tampilan Tabel Word Lengkap"
             >
-              <span>📊</span>
               <span>Tabel</span>
             </button>
           </div>
@@ -575,7 +565,6 @@ export default function InventarisPage() {
               </div>
             ) : filteredItems.length === 0 ? (
               <div className="word-card-empty">
-                <span style={{ fontSize: '2.5rem' }}>📦</span>
                 <h3>Belum Ada Data Barang</h3>
                 <p>
                   {items.length === 0
@@ -584,7 +573,7 @@ export default function InventarisPage() {
                 </p>
                 {items.length === 0 && (
                   <button onClick={() => setShowAddModal(true)} className="word-btn word-btn-primary" style={{ marginTop: '0.75rem' }}>
-                    ➕ Tambah Barang Pertama
+                    Tambah Barang Pertama
                   </button>
                 )}
               </div>
@@ -636,11 +625,10 @@ export default function InventarisPage() {
                             onError={(e) => handleImageError(e, it.foto)}
                             loading="lazy"
                           />
-                          <span className="card-photo-hint">🔍 Perbesar</span>
+                          <span className="card-photo-hint">Perbesar</span>
                         </button>
                       ) : (
                         <div className="card-photo-placeholder">
-                          <span>📦</span>
                           <small>Tanpa Foto</small>
                         </div>
                       )}
@@ -674,7 +662,7 @@ export default function InventarisPage() {
                             rel="noopener noreferrer"
                             className="card-drive-url"
                           >
-                            🔗 Buka Foto di Google Drive
+                            Buka Foto di Google Drive
                           </a>
                         )}
                       </div>
@@ -693,7 +681,6 @@ export default function InventarisPage() {
           /* 2. Tampilan Tabel Lengkap (Word Style) */
           <section className="word-table-card">
             <div className="word-table-scroll-hint">
-              <span>👉</span>
               <span>Geser ke kanan untuk melihat kolom detail lainnya</span>
             </div>
             <div className="word-table-wrapper">
@@ -726,7 +713,6 @@ export default function InventarisPage() {
                     <tr>
                       <td colSpan={10} className="word-empty-cell">
                         <div className="word-empty-box">
-                          <span style={{ fontSize: '2.5rem' }}>📦</span>
                           <h3>Belum Ada Data Barang</h3>
                           <p>
                             {items.length === 0
@@ -735,7 +721,7 @@ export default function InventarisPage() {
                           </p>
                           {items.length === 0 && (
                             <button onClick={() => setShowAddModal(true)} className="word-btn word-btn-primary" style={{ marginTop: '0.75rem' }}>
-                              ➕ Tambah Barang Pertama
+                              Tambah Barang Pertama
                             </button>
                           )}
                         </div>
@@ -765,7 +751,7 @@ export default function InventarisPage() {
                                   onError={(e) => handleImageError(e, it.foto)}
                                   loading="lazy"
                                 />
-                                <span className="photo-icon-fallback">📸</span>
+                                <span className="photo-icon-fallback">Foto</span>
                               </button>
                             ) : (
                               <span className="word-no-photo" title="Foto belum diunggah">
@@ -785,7 +771,7 @@ export default function InventarisPage() {
                                 rel="noopener noreferrer"
                                 className="word-drive-link"
                               >
-                                🔗 Buka Foto Drive
+                                Buka Foto Drive
                               </a>
                             )}
                           </td>
@@ -844,7 +830,7 @@ export default function InventarisPage() {
                 <h3 className="word-modal-title">{previewPhoto.title}</h3>
               </div>
               <button onClick={() => setPreviewPhoto(null)} className="word-modal-close-btn">
-                ✕
+                &times;
               </button>
             </div>
             <div className="word-modal-body">
@@ -862,7 +848,7 @@ export default function InventarisPage() {
                 rel="noopener noreferrer"
                 className="word-btn word-btn-primary"
               >
-                🔗 Buka Asli di Google Drive
+                Buka Asli di Google Drive
               </a>
               <button onClick={() => setPreviewPhoto(null)} className="word-btn word-btn-secondary">
                 Tutup
@@ -886,7 +872,7 @@ export default function InventarisPage() {
                 onClick={() => setShowAddModal(false)}
                 className="word-modal-close-btn"
               >
-                ✕
+                &times;
               </button>
             </div>
 
@@ -894,7 +880,7 @@ export default function InventarisPage() {
               <div className="word-modal-body">
                 {addSuccessMsg && (
                   <div className="word-success-alert">
-                    ✅ {addSuccessMsg}
+                    {addSuccessMsg}
                   </div>
                 )}
 
@@ -930,10 +916,10 @@ export default function InventarisPage() {
                       className="word-form-control"
                       required
                     >
-                      <option value="Baik">🟢 Baik</option>
-                      <option value="Rusak Ringan">🟡 Rusak Ringan</option>
-                      <option value="Rusak Berat">🔴 Rusak Berat</option>
-                      <option value="Hilang">⚪ Hilang</option>
+                      <option value="Baik">Baik</option>
+                      <option value="Rusak Ringan">Rusak Ringan</option>
+                      <option value="Rusak Berat">Rusak Berat</option>
+                      <option value="Hilang">Hilang</option>
                     </select>
                   </div>
 
@@ -1024,7 +1010,7 @@ export default function InventarisPage() {
                   Batal
                 </button>
                 <button type="submit" disabled={isSubmitting} className="word-btn word-btn-primary">
-                  {isSubmitting ? '⏳ Menyimpan...' : 'Simpan Barang'}
+                  {isSubmitting ? 'Menyimpan...' : 'Simpan Barang'}
                 </button>
               </div>
             </form>

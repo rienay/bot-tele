@@ -192,7 +192,7 @@ export default function FinanceDashboardPage() {
       <nav className="navbar">
         <div className="nav-container">
           <a href="#" className="brand">
-            <div className="brand-icon">🌸</div>
+            <div className="brand-icon">DKC</div>
             <div>
               <div className="brand-title">Catatan Keuangan</div>
               <div className="brand-subtitle">Dewan Kerja Cabang (DKC)</div>
@@ -204,7 +204,6 @@ export default function FinanceDashboardPage() {
               href="/"
               className="nav-btn-link active-pink"
             >
-              <span>💰</span>
               <span className="nav-label">Keuangan</span>
             </Link>
 
@@ -213,7 +212,6 @@ export default function FinanceDashboardPage() {
               className="nav-btn-link outline-blue"
               title="Buka Website Inventaris Barang"
             >
-              <span>📦</span>
               <span className="nav-label">Inventaris</span>
             </Link>
 
@@ -224,7 +222,6 @@ export default function FinanceDashboardPage() {
               className="bot-badge"
               title="Catat pengeluaran lewat Telegram"
             >
-              <span>🤖</span>
               <span className="bot-name">@duit_pwd_bot</span>
             </a>
           </div>
@@ -234,7 +231,7 @@ export default function FinanceDashboardPage() {
       <main className="main-wrapper">
         {/* Hero Section */}
         <header className="hero-banner">
-          <div className="hero-tag">✨ Portal Keuangan Transparan</div>
+          <div className="hero-tag">Portal Keuangan Transparan</div>
           <h1 className="hero-title">Akses Keuangan Lebih Asik & Terbuka</h1>
           <p className="hero-desc">
             Pantau seluruh saldo kas, pengeluaran kegiatan, dan bukti struk nota secara transparan & mudah dipahami.
@@ -251,7 +248,6 @@ export default function FinanceDashboardPage() {
                   className={`book-tab-btn ${selectedBook === b ? 'active' : ''}`}
                   onClick={() => setSelectedBook(b)}
                 >
-                  <span>{b === 'Semua' ? '🌟' : b.toLowerCase() === 'kas' ? '📌' : '📖'}</span>
                   <span>{b === 'Semua' ? 'Semua Buku' : b}</span>
                 </button>
               ))
@@ -264,7 +260,7 @@ export default function FinanceDashboardPage() {
         {/* Status Error atau Loading */}
         {error && (
           <div style={{ background: '#FFF1F2', border: '1px solid #FECDD3', padding: '1rem', borderRadius: '12px', color: '#BE123C', marginBottom: '1.5rem', fontWeight: 600 }}>
-            ⚠️ {error}
+            Perhatian: {error}
             <button onClick={() => fetchData(selectedBook)} style={{ marginLeft: '1rem', textDecoration: 'underline', background: 'none', border: 'none', color: '#BE123C', cursor: 'pointer', fontWeight: 700 }}>
               Coba lagi
             </button>
@@ -277,13 +273,12 @@ export default function FinanceDashboardPage() {
           <div className="stat-card hero-stat">
             <div className="stat-header">
               <span className="stat-label">Sisa Saldo Bersih</span>
-              <div className="stat-icon" style={{ background: '#FCE7F3', color: '#BE123C' }}>💰</div>
             </div>
             <div className="stat-value" style={{ color: (data?.stats.saldo || 0) >= 0 ? '#047857' : '#BE123C' }}>
               {loading && !data ? '...' : formatRupiah(data?.stats.saldo || 0)}
             </div>
             <div className="stat-subtext">
-              {(data?.stats.saldo || 0) >= 0 ? '🟢 Kas aman & surplus' : '🔻 Terjadi defisit kas'}
+              {(data?.stats.saldo || 0) >= 0 ? 'Kas aman & surplus' : 'Terjadi defisit kas'}
             </div>
           </div>
 
@@ -291,7 +286,6 @@ export default function FinanceDashboardPage() {
           <div className="stat-card">
             <div className="stat-header">
               <span className="stat-label">Total Pemasukan</span>
-              <div className="stat-icon" style={{ background: '#ECFDF5', color: '#047857' }}>📥</div>
             </div>
             <div className="stat-value" style={{ color: '#047857' }}>
               {loading && !data ? '...' : formatRupiah(data?.stats.totalPemasukan || 0)}
@@ -303,7 +297,6 @@ export default function FinanceDashboardPage() {
           <div className="stat-card">
             <div className="stat-header">
               <span className="stat-label">Total Pengeluaran</span>
-              <div className="stat-icon" style={{ background: '#FFF1F2', color: '#BE123C' }}>📤</div>
             </div>
             <div className="stat-value" style={{ color: '#BE123C' }}>
               {loading && !data ? '...' : formatRupiah(data?.stats.totalPengeluaran || 0)}
@@ -315,7 +308,6 @@ export default function FinanceDashboardPage() {
           <div className="stat-card">
             <div className="stat-header">
               <span className="stat-label">Total Transaksi</span>
-              <div className="stat-icon" style={{ background: '#FAF5FF', color: '#7E22CE' }}>🧾</div>
             </div>
             <div className="stat-value">
               {loading && !data ? '...' : `${data?.stats.count || 0} Kali`}
@@ -328,13 +320,13 @@ export default function FinanceDashboardPage() {
         {categoryStats.length > 0 && (
           <section className="category-summary-box">
             <div className="category-summary-title">
-              <span>🎯 Top Kategori Belanja ({selectedBook}):</span>
+              <span>Top Kategori Belanja ({selectedBook}):</span>
               {selectedCategory !== 'all' && (
                 <button
                   onClick={() => setSelectedCategory('all')}
                   style={{ background: 'none', border: 'none', color: '#BE123C', fontSize: '0.8rem', cursor: 'pointer', fontWeight: 700 }}
                 >
-                  ✕ Reset Filter Kategori
+                  Reset Filter Kategori
                 </button>
               )}
             </div>
@@ -364,7 +356,6 @@ export default function FinanceDashboardPage() {
         <section className="controls-bar">
           <div className="controls-row-top">
             <div className="search-box">
-              <span className="search-icon">🔍</span>
               <input
                 type="text"
                 placeholder="Cari transaksi, item, kategori, tanggal, atau PIC..."
@@ -385,19 +376,19 @@ export default function FinanceDashboardPage() {
                 className={`filter-pill ${typeFilter === 'Pengeluaran' ? 'active' : ''}`}
                 onClick={() => setTypeFilter('Pengeluaran')}
               >
-                🔴 Pengeluaran
+                Pengeluaran
               </button>
               <button
                 className={`filter-pill ${typeFilter === 'Pemasukan' ? 'active' : ''}`}
                 onClick={() => setTypeFilter('Pemasukan')}
               >
-                🟢 Pemasukan
+                Pemasukan
               </button>
               <button
                 className={`filter-pill ${typeFilter === 'with_receipt' ? 'active' : ''}`}
                 onClick={() => setTypeFilter('with_receipt')}
               >
-                📎 Ada Nota Struk
+                Ada Nota Struk
               </button>
             </div>
           </div>
@@ -411,7 +402,7 @@ export default function FinanceDashboardPage() {
                 className={`filter-select ${selectedCategory !== 'all' ? 'active' : ''}`}
                 title="Filter berdasarkan Kategori"
               >
-                <option value="all">📂 Semua Kategori</option>
+                <option value="all">Semua Kategori</option>
                 {availableCategories.map((cat) => (
                   <option key={cat} value={cat}>
                     {cat}
@@ -428,7 +419,7 @@ export default function FinanceDashboardPage() {
                 className={`filter-select ${selectedMonth !== 'all' ? 'active' : ''}`}
                 title="Filter berdasarkan Bulan"
               >
-                <option value="all">📅 Semua Bulan</option>
+                <option value="all">Semua Bulan</option>
                 {MONTH_OPTIONS.map((m) => (
                   <option key={m.value} value={m.value}>
                     {m.value} - {m.label}
@@ -445,7 +436,7 @@ export default function FinanceDashboardPage() {
                 className={`filter-select ${selectedYear !== 'all' ? 'active' : ''}`}
                 title="Filter berdasarkan Tahun"
               >
-                <option value="all">🗓️ Semua Tahun</option>
+                <option value="all">Semua Tahun</option>
                 {availableYears.map((yr) => (
                   <option key={yr} value={yr}>
                     Tahun {yr}
@@ -461,7 +452,6 @@ export default function FinanceDashboardPage() {
                 className="btn-reset-filters"
                 title="Kembalikan semua filter ke awal"
               >
-                <span>✕</span>
                 <span>Reset Filter</span>
               </button>
             )}
@@ -472,23 +462,23 @@ export default function FinanceDashboardPage() {
             <div className="filtered-summary-banner">
               <div className="filtered-summary-metrics">
                 <span className="filtered-summary-item">
-                  <span>📊 Terfilter:</span>
+                  <span>Terfilter:</span>
                   <span className="filtered-summary-val">{filteredSummary.count} Transaksi</span>
                 </span>
                 <span className="filtered-summary-item">
-                  <span>📥 Pemasukan:</span>
+                  <span>Pemasukan:</span>
                   <span className="filtered-summary-val" style={{ color: '#047857' }}>
                     +{formatRupiah(filteredSummary.income)}
                   </span>
                 </span>
                 <span className="filtered-summary-item">
-                  <span>📤 Pengeluaran:</span>
+                  <span>Pengeluaran:</span>
                   <span className="filtered-summary-val" style={{ color: '#BE123C' }}>
                     -{formatRupiah(filteredSummary.expense)}
                   </span>
                 </span>
                 <span className="filtered-summary-item">
-                  <span>💰 Saldo Periode:</span>
+                  <span>Saldo Periode:</span>
                   <span
                     className="filtered-summary-val"
                     style={{ color: filteredSummary.balance >= 0 ? '#047857' : '#BE123C' }}
@@ -528,20 +518,17 @@ export default function FinanceDashboardPage() {
                 cursor: 'pointer',
               }}
             >
-              <span>{isRefreshing ? '⏳' : '🔄'}</span>
               <span>{isRefreshing ? 'Memperbarui...' : 'Refresh'}</span>
             </button>
           </div>
 
           {loading && !data ? (
             <div className="empty-state">
-              <div className="empty-icon">⏳</div>
               <div className="empty-title">Memuat data keuangan...</div>
               <div className="empty-desc">Mengambil catatan terbaru dari spreadsheet secara langsung.</div>
             </div>
           ) : filteredTransactions.length === 0 ? (
             <div className="empty-state">
-              <div className="empty-icon">🌸</div>
               <div className="empty-title">Tidak ada transaksi ditemukan</div>
               <div className="empty-desc">
                 {searchQuery
@@ -552,7 +539,7 @@ export default function FinanceDashboardPage() {
           ) : (
             <>
               <div className="table-scroll-hint">
-                <span>↔️ Geser tabel ke samping untuk melihat nominal & nota</span>
+                <span>Geser tabel ke samping untuk melihat nominal & nota</span>
               </div>
               <div className="table-card">
                 <div className="table-responsive">
@@ -576,23 +563,19 @@ export default function FinanceDashboardPage() {
                           <tr key={tx.id || idx}>
                             <td className="col-num desktop-only">{idx + 1}</td>
                             <td className="col-date desktop-only">
-                              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
-                                <span>📅</span>
-                                <span>{tx.date}</span>
-                              </span>
+                              <span>{tx.date}</span>
                             </td>
                             <td className="col-desc">
                               <span className="tx-table-desc">{tx.description || tx.category}</span>
                               {/* Mobile-only metadata */}
                               <div className="mobile-only-meta">
-                                <span>📅 {tx.date}</span>
+                                <span>{tx.date}</span>
                                 <span>•</span>
-                                <span className="book-badge">📖 {tx.book}</span>
+                                <span className="book-badge">{tx.book}</span>
                                 <span>•</span>
                                 <span className="cat-badge">{tx.category}</span>
                                 {tx.pic && (
                                   <span className="tx-table-pic">
-                                    <span>👤</span>
                                     <span>{tx.pic}</span>
                                   </span>
                                 )}
@@ -600,7 +583,6 @@ export default function FinanceDashboardPage() {
                             </td>
                             <td className="desktop-only">
                               <span className="book-badge">
-                                <span>📖</span>
                                 <span>{tx.book}</span>
                               </span>
                             </td>
@@ -609,7 +591,7 @@ export default function FinanceDashboardPage() {
                             </td>
                             <td className="desktop-only">
                               <span className={`type-badge ${isIncome ? 'pemasukan' : 'pengeluaran'}`}>
-                                <span>{isIncome ? '📥 Masuk' : '📤 Keluar'}</span>
+                                <span>{isIncome ? 'Masuk' : 'Keluar'}</span>
                               </span>
                             </td>
                             <td className={`col-amount ${isIncome ? 'pemasukan' : 'pengeluaran'}`}>
@@ -626,7 +608,6 @@ export default function FinanceDashboardPage() {
                                     className="btn-nota-sm"
                                     title="Buka bukti foto struk"
                                   >
-                                    <span>📎</span>
                                     <span>Lihat Nota</span>
                                   </a>
                                 ) : (
@@ -643,7 +624,6 @@ export default function FinanceDashboardPage() {
                                   className="btn-nota"
                                   title="Buka bukti foto struk di Google Drive"
                                 >
-                                  <span>📎</span>
                                   <span>Lihat Nota</span>
                                 </a>
                               ) : (
@@ -674,7 +654,7 @@ export default function FinanceDashboardPage() {
                       transition: 'all 0.2s ease',
                     }}
                   >
-                    Muat 50 Transaksi Lagi (Sisa {filteredTransactions.length - visibleCount}) ⤵
+                    Muat 50 Transaksi Lagi (Sisa {filteredTransactions.length - visibleCount})
                   </button>
                 </div>
               )}
@@ -687,7 +667,7 @@ export default function FinanceDashboardPage() {
         <section style={{ marginTop: '3rem', background: '#FFFFFF', border: '1px solid rgba(244, 63, 94, 0.2)', borderRadius: '16px', padding: '1.5rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap', boxShadow: 'var(--shadow-sm)' }}>
           <div>
             <h3 style={{ fontFamily: 'Outfit, sans-serif', fontSize: '1.1rem', fontWeight: 800, color: '#4C0519', marginBottom: '0.25rem' }}>
-              💬 Ingin mencatat pemasukan atau pengeluaran baru?
+              Ingin mencatat pemasukan atau pengeluaran baru?
             </h3>
             <p style={{ fontSize: '0.85rem', color: '#881337' }}>
               Gunakan bot Telegram kami. Cukup ketik chat biasa (contoh: <i>Beli konsumsi 35rb</i>) atau kirim foto nota struk belanja!
@@ -709,14 +689,14 @@ export default function FinanceDashboardPage() {
               whiteSpace: 'nowrap',
             }}
           >
-            Buka Bot Telegram ➔
+            Buka Bot Telegram
           </a>
         </section>
       </main>
 
       {/* Footer */}
       <footer className="footer">
-        <p>🌸 Dashboard Keuangan DKC • Terhubung Otomatis ke Google Sheets & Drive</p>
+        <p>Dashboard Keuangan DKC • Terhubung Otomatis ke Google Sheets & Drive</p>
         <p style={{ marginTop: '0.35rem', fontSize: '0.78rem' }}>
           Terakhir sinkronisasi: {data?.lastUpdated || 'Baru saja'}
         </p>

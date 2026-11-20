@@ -216,16 +216,6 @@ body {
   overflow: hidden;
 }
 
-.hero-banner::after {
-  content: '🌸';
-  position: absolute;
-  right: -10px;
-  bottom: -20px;
-  font-size: 8rem;
-  opacity: 0.15;
-  pointer-events: none;
-}
-
 .hero-tag {
   display: inline-flex;
   align-items: center;
