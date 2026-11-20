@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import Link from 'next/link';
 
 export interface InventarisItem {
@@ -107,6 +107,88 @@ export default function InventarisPage() {
   const [formKondisi, setFormKondisi] = useState('Baik');
   const [formFoto, setFormFoto] = useState('');
   const [formKet, setFormKet] = useState('');
+
+  // Photo Upload State
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [photoPreview, setPhotoPreview] = useState<string | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [uploadFileName, setUploadFileName] = useState<string | null>(null);
+  const [showManualUrl, setShowManualUrl] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const resetForm = () => {
+    setFormNama('');
+    setFormJumlah('1');
+    setFormTahun(String(new Date().getFullYear()));
+    setFormSumber('Pembelian Kas');
+    setFormKondisi('Baik');
+    setFormFoto('');
+    setFormKet('');
+    setPhotoPreview(null);
+    setUploadError(null);
+    setUploadFileName(null);
+    setUploadingPhoto(false);
+    setShowManualUrl(false);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const handlePhotoFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+      setUploadError('Berkas harus berupa gambar (JPG, PNG, atau WEBP).');
+      return;
+    }
+
+    if (file.size > 20 * 1024 * 1024) {
+      setUploadError('Ukuran gambar terlalu besar (maksimal 20MB).');
+      return;
+    }
+
+    setUploadError(null);
+    setUploadFileName(file.name);
+
+    const localUrl = URL.createObjectURL(file);
+    setPhotoPreview(localUrl);
+    setUploadingPhoto(true);
+
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('unit', formUnit);
+
+      const res = await fetch('/api/inventaris/upload', {
+        method: 'POST',
+        body: fd,
+      });
+
+      const json = await res.json();
+      if (json.success && json.url) {
+        setFormFoto(json.url);
+        if (json.displayUrl) {
+          setPhotoPreview(json.displayUrl);
+        }
+      } else {
+        throw new Error(json.error || 'Gagal mengunggah foto ke Google Drive.');
+      }
+    } catch (err: any) {
+      console.error('Error saat upload foto:', err);
+      setUploadError(err?.message || 'Gagal mengunggah foto ke Google Drive.');
+    } finally {
+      setUploadingPhoto(false);
+    }
+  };
+
+  const handleRemovePhoto = () => {
+    setPhotoPreview(null);
+    setFormFoto('');
+    setUploadFileName(null);
+    setUploadError(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
 
   const fetchData = async (showSpinner = false) => {
     if (showSpinner) setIsRefreshing(true);
@@ -232,6 +314,11 @@ export default function InventarisPage() {
       return;
     }
 
+    if (uploadingPhoto) {
+      alert('Foto sedang diunggah ke Google Drive. Mohon tunggu beberapa detik hingga proses selesai.');
+      return;
+    }
+
     setIsSubmitting(true);
     setAddSuccessMsg(null);
 
@@ -254,9 +341,7 @@ export default function InventarisPage() {
       const json = await res.json();
       if (json.success && json.item) {
         setAddSuccessMsg(`Barang berhasil dicatat dengan kode: ${json.item.kodeBarang}`);
-        setFormNama('');
-        setFormFoto('');
-        setFormKet('');
+        resetForm();
         await fetchData(true);
         setTimeout(() => {
           setShowAddModal(false);
@@ -860,7 +945,10 @@ export default function InventarisPage() {
 
       {/* Modal Tambah Barang Baru */}
       {showAddModal && (
-        <div className="word-modal-backdrop" onClick={() => !isSubmitting && setShowAddModal(false)}>
+        <div
+          className="word-modal-backdrop"
+          onClick={() => !isSubmitting && !uploadingPhoto && (resetForm(), setShowAddModal(false))}
+        >
           <div className="word-modal-card form-card" onClick={(e) => e.stopPropagation()}>
             <div className="word-modal-header">
               <div>
@@ -868,8 +956,11 @@ export default function InventarisPage() {
                 <h3 className="word-modal-title">Tambah Barang Inventaris Baru</h3>
               </div>
               <button
-                disabled={isSubmitting}
-                onClick={() => setShowAddModal(false)}
+                disabled={isSubmitting || uploadingPhoto}
+                onClick={() => {
+                  resetForm();
+                  setShowAddModal(false);
+                }}
                 className="word-modal-close-btn"
               >
                 &times;
@@ -963,7 +1054,7 @@ export default function InventarisPage() {
                   </div>
 
                   {/* Sumber Barang */}
-                  <div className="word-form-group">
+                  <div className="word-form-group full-col">
                     <label>Sumber Barang</label>
                     <input
                       type="text"
@@ -974,16 +1065,132 @@ export default function InventarisPage() {
                     />
                   </div>
 
-                  {/* Link Foto Google Drive */}
-                  <div className="word-form-group">
-                    <label>Link Foto Google Drive (Opsional)</label>
+                  {/* Upload Foto Barang Otomatis ke Google Drive */}
+                  <div className="word-form-group full-col">
+                    <label>Foto Barang (Otomatis Masuk ke Google Drive)</label>
+
+                    {/* Hidden file input */}
                     <input
-                      type="url"
-                      value={formFoto}
-                      onChange={(e) => setFormFoto(e.target.value)}
-                      placeholder="https://drive.google.com/..."
-                      className="word-form-control"
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/*"
+                      style={{ display: 'none' }}
+                      onChange={handlePhotoFileChange}
                     />
+
+                    {/* Box Upload / Preview */}
+                    {!photoPreview && !formFoto ? (
+                      <div
+                        className="word-upload-dropzone"
+                        onClick={() => !uploadingPhoto && fileInputRef.current?.click()}
+                      >
+                        <div className="upload-icon-box">
+                          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                            <circle cx="8.5" cy="8.5" r="1.5" />
+                            <polyline points="21 15 16 10 5 21" />
+                          </svg>
+                        </div>
+                        <div className="upload-text-main">Pilih / Ambil Foto Barang</div>
+                        <div className="upload-text-sub">
+                          Ambil langsung dengan kamera HP atau pilih dari galeri / berkas (JPG, PNG, WEBP)
+                        </div>
+                        <div className="upload-badge-drive">Otomatis dioptimasi & disimpan ke Google Drive</div>
+                      </div>
+                    ) : (
+                      <div className="word-upload-preview-box">
+                        <div className="preview-thumb-wrapper">
+                          <img
+                            src={photoPreview || formFoto}
+                            alt="Preview Barang"
+                            className="preview-img"
+                            onError={(e) => {
+                              (e.target as HTMLElement).style.display = 'none';
+                            }}
+                          />
+                        </div>
+
+                        <div className="preview-info-col">
+                          {uploadingPhoto ? (
+                            <div className="upload-status-uploading">
+                              <span className="spinner-inline"></span>
+                              <span>Mengunggah foto ke Google Drive...</span>
+                            </div>
+                          ) : formFoto ? (
+                            <div className="upload-status-success">
+                              <span className="check-badge">Tersimpan di Google Drive</span>
+                              {uploadFileName && <span className="filename-text">{uploadFileName}</span>}
+                              <a
+                                href={formFoto}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="drive-link-btn"
+                              >
+                                Buka di Google Drive
+                              </a>
+                            </div>
+                          ) : null}
+
+                          {uploadError && (
+                            <div className="upload-status-error">
+                              <span>Gagal: {uploadError}</span>
+                            </div>
+                          )}
+
+                          <div className="preview-action-row">
+                            <button
+                              type="button"
+                              disabled={uploadingPhoto}
+                              onClick={() => fileInputRef.current?.click()}
+                              className="btn-change-photo"
+                            >
+                              Ganti Foto
+                            </button>
+                            <button
+                              type="button"
+                              disabled={uploadingPhoto}
+                              onClick={handleRemovePhoto}
+                              className="btn-remove-photo"
+                            >
+                              Hapus
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Manual Link Toggle */}
+                    <div className="manual-link-toggle">
+                      <button
+                        type="button"
+                        onClick={() => setShowManualUrl(!showManualUrl)}
+                        className="toggle-link-btn"
+                      >
+                        {showManualUrl
+                          ? 'Sembunyikan input link manual'
+                          : 'Atau masukkan link foto Google Drive manual'}
+                      </button>
+                    </div>
+
+                    {showManualUrl && (
+                      <div className="manual-url-box">
+                        <input
+                          type="url"
+                          value={formFoto}
+                          onChange={(e) => {
+                            setFormFoto(e.target.value);
+                            if (e.target.value.trim()) {
+                              setPhotoPreview(e.target.value);
+                            }
+                          }}
+                          placeholder="https://drive.google.com/file/d/.../view"
+                          className="word-form-control"
+                        />
+                        <span className="form-hint">
+                          Tempel tautan Google Drive jika foto sudah ada di folder Drive sebelumnya.
+                        </span>
+                      </div>
+                    )}
                   </div>
 
                   {/* Keterangan / Lokasi Simpan */}
@@ -1003,14 +1210,25 @@ export default function InventarisPage() {
               <div className="word-modal-footer">
                 <button
                   type="button"
-                  disabled={isSubmitting}
-                  onClick={() => setShowAddModal(false)}
+                  disabled={isSubmitting || uploadingPhoto}
+                  onClick={() => {
+                    resetForm();
+                    setShowAddModal(false);
+                  }}
                   className="word-btn word-btn-secondary"
                 >
                   Batal
                 </button>
-                <button type="submit" disabled={isSubmitting} className="word-btn word-btn-primary">
-                  {isSubmitting ? 'Menyimpan...' : 'Simpan Barang'}
+                <button
+                  type="submit"
+                  disabled={isSubmitting || uploadingPhoto}
+                  className="word-btn word-btn-primary"
+                >
+                  {isSubmitting
+                    ? 'Menyimpan...'
+                    : uploadingPhoto
+                    ? 'Mengunggah Foto...'
+                    : 'Simpan Barang'}
                 </button>
               </div>
             </form>
@@ -1984,6 +2202,187 @@ export default function InventarisPage() {
           margin-bottom: 0.85rem;
           font-weight: 600;
           font-size: 0.825rem;
+        }
+
+        /* Upload Foto Dropzone & Preview (Microsoft Word Style) */
+        .word-upload-dropzone {
+          border: 2px dashed #93c5fd;
+          background-color: #f8fafc;
+          border-radius: 8px;
+          padding: 1.25rem 1rem;
+          text-align: center;
+          cursor: pointer;
+          transition: all 0.2s ease;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          gap: 0.35rem;
+        }
+        .word-upload-dropzone:hover {
+          border-color: #185abd;
+          background-color: #f0f7ff;
+        }
+        .upload-icon-box {
+          color: #185abd;
+          margin-bottom: 0.25rem;
+        }
+        .upload-text-main {
+          font-weight: 700;
+          color: #185abd;
+          font-size: 0.9rem;
+        }
+        .upload-text-sub {
+          font-size: 0.75rem;
+          color: #64748b;
+          max-width: 380px;
+        }
+        .upload-badge-drive {
+          display: inline-block;
+          margin-top: 0.4rem;
+          font-size: 0.7rem;
+          font-weight: 600;
+          color: #0369a1;
+          background-color: #e0f2fe;
+          border: 1px solid #bae6fd;
+          padding: 0.2rem 0.55rem;
+          border-radius: 4px;
+        }
+
+        .word-upload-preview-box {
+          display: flex;
+          align-items: center;
+          gap: 1rem;
+          background-color: #f8fafc;
+          border: 1px solid #cbd5e1;
+          border-radius: 8px;
+          padding: 0.75rem;
+        }
+        .preview-thumb-wrapper {
+          width: 80px;
+          height: 80px;
+          flex-shrink: 0;
+          border-radius: 6px;
+          overflow: hidden;
+          background-color: #e2e8f0;
+          border: 1px solid #cbd5e1;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+        .preview-img {
+          width: 100%;
+          height: 100%;
+          object-fit: cover;
+        }
+        .preview-info-col {
+          flex: 1;
+          display: flex;
+          flex-direction: column;
+          gap: 0.4rem;
+          min-width: 0;
+        }
+        .upload-status-uploading {
+          display: flex;
+          align-items: center;
+          gap: 0.45rem;
+          font-size: 0.8rem;
+          font-weight: 600;
+          color: #185abd;
+        }
+        .spinner-inline {
+          width: 14px;
+          height: 14px;
+          border: 2px solid #bfdbfe;
+          border-top-color: #185abd;
+          border-radius: 50%;
+          animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin {
+          to { transform: rotate(360deg); }
+        }
+        .upload-status-success {
+          display: flex;
+          flex-direction: column;
+          gap: 0.2rem;
+        }
+        .check-badge {
+          display: inline-block;
+          font-size: 0.72rem;
+          font-weight: 700;
+          color: #15803d;
+          background-color: #dcfce7;
+          border: 1px solid #86efac;
+          padding: 0.15rem 0.45rem;
+          border-radius: 4px;
+          width: fit-content;
+        }
+        .filename-text {
+          font-size: 0.75rem;
+          color: #475569;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .drive-link-btn {
+          font-size: 0.75rem;
+          color: #185abd;
+          text-decoration: underline;
+          width: fit-content;
+        }
+        .upload-status-error {
+          font-size: 0.75rem;
+          color: #b91c1c;
+          font-weight: 600;
+        }
+        .preview-action-row {
+          display: flex;
+          gap: 0.5rem;
+          margin-top: 0.2rem;
+        }
+        .btn-change-photo {
+          background-color: #ffffff;
+          border: 1px solid #cbd5e1;
+          color: #334155;
+          padding: 0.25rem 0.6rem;
+          border-radius: 4px;
+          font-size: 0.75rem;
+          font-weight: 600;
+          cursor: pointer;
+        }
+        .btn-change-photo:hover {
+          background-color: #f1f5f9;
+        }
+        .btn-remove-photo {
+          background-color: #ffffff;
+          border: 1px solid #fecaca;
+          color: #b91c1c;
+          padding: 0.25rem 0.6rem;
+          border-radius: 4px;
+          font-size: 0.75rem;
+          font-weight: 600;
+          cursor: pointer;
+        }
+        .btn-remove-photo:hover {
+          background-color: #fee2e2;
+        }
+        .manual-link-toggle {
+          margin-top: 0.35rem;
+        }
+        .toggle-link-btn {
+          background: none;
+          border: none;
+          color: #64748b;
+          font-size: 0.73rem;
+          text-decoration: underline;
+          cursor: pointer;
+          padding: 0;
+        }
+        .toggle-link-btn:hover {
+          color: #185abd;
+        }
+        .manual-url-box {
+          margin-top: 0.4rem;
         }
 
         /* Error Box */

@@ -6,6 +6,7 @@ import {
   DAFTAR_UNIT,
   normalisasiUnit,
 } from '@/lib/inventaris';
+import { uploadReceiptToDrive } from '@/lib/googleDrive';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -71,10 +72,52 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const body = await request.json();
-    const { namaBarang, unit, jumlah, tahun, sumber, kondisi, foto, keterangan } = body;
+    const contentType = request.headers.get('content-type') || '';
+    let namaBarang = '';
+    let unit = 'DKC';
+    let jumlah: any = '1';
+    let tahun: any = new Date().getFullYear();
+    let sumber = 'Pembelian Kas';
+    let kondisi = 'Baik';
+    let foto = '';
+    let keterangan = '-';
 
-    if (!namaBarang || !namaBarang.trim()) {
+    if (contentType.includes('multipart/form-data')) {
+      const formData = await request.formData();
+      namaBarang = (formData.get('namaBarang') as string) || '';
+      unit = (formData.get('unit') as string) || 'DKC';
+      jumlah = formData.get('jumlah') || '1';
+      tahun = formData.get('tahun') || new Date().getFullYear();
+      sumber = (formData.get('sumber') as string) || 'Pembelian Kas';
+      kondisi = (formData.get('kondisi') as string) || 'Baik';
+      foto = (formData.get('foto') as string) || '';
+      keterangan = (formData.get('keterangan') as string) || '-';
+
+      // Jika ada file gambar yang dikirim langsung di FormData
+      const file = formData.get('file') as File | null;
+      if (file && file.size > 0 && file.type.startsWith('image/')) {
+        const arrayBuffer = await file.arrayBuffer();
+        const buffer = Buffer.from(arrayBuffer);
+        const safeUnit = String(unit).toLowerCase().replace(/[^a-z0-9]/g, '');
+        const fileName = `inventaris_${safeUnit || 'barang'}_${Date.now()}.jpg`;
+        const uploadedUrl = await uploadReceiptToDrive(buffer, fileName, file.type);
+        if (uploadedUrl) {
+          foto = uploadedUrl;
+        }
+      }
+    } else {
+      const body = await request.json();
+      namaBarang = body.namaBarang;
+      unit = body.unit || 'DKC';
+      jumlah = body.jumlah || '1';
+      tahun = body.tahun || new Date().getFullYear();
+      sumber = body.sumber || 'Pembelian Kas';
+      kondisi = body.kondisi || 'Baik';
+      foto = body.foto || '';
+      keterangan = body.keterangan || '-';
+    }
+
+    if (!namaBarang || !String(namaBarang).trim()) {
       return NextResponse.json(
         { success: false, error: 'Nama barang wajib diisi.' },
         { status: 400 }
