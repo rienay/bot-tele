@@ -143,7 +143,8 @@ export async function getAllSheetBooks(forceRefresh = false): Promise<string[]> 
     if (
       title.toLowerCase() === 'anggota' ||
       title.toLowerCase() === 'kas_anggota' ||
-      title.toLowerCase() === 'dashboard'
+      title.toLowerCase() === 'dashboard' ||
+      title.toLowerCase() === 'inventaris'
     )
       continue;
     validBooks.push(title);
@@ -979,8 +980,8 @@ export async function findMatchingTransactionRow(
     const rows = res.data.values || [];
     if (rows.length === 0) return null;
 
-    let candidateWithoutPhoto: RecentTransactionItem | null = null;
-    let candidateAny: RecentTransactionItem | null = null;
+    let bestCandidate: RecentTransactionItem | null = null;
+    let highestScore = -1;
 
     // Scan dari baris paling bawah (transaksi terbaru)
     for (let i = rows.length - 1; i >= 0; i--) {
@@ -996,9 +997,15 @@ export async function findMatchingTransactionRow(
       const link = String(noteLinkRaw || '').trim();
       const hasPhoto = link.startsWith('http://') || link.startsWith('https://');
 
+      let currentScore = 0;
+
       // 1. Cek kecocokan nominal jika disediakan
       if (criteria.amount !== undefined && criteria.amount > 0) {
-        if (cleanNominal !== criteria.amount) continue;
+        if (cleanNominal === criteria.amount) {
+          currentScore += 50; // Nominal cocok persis
+        } else {
+          continue; // Nominal tidak cocok sama sekali, lewati
+        }
       }
 
       // 2. Cek kecocokan deskripsi jika ada
@@ -1010,9 +1017,16 @@ export async function findMatchingTransactionRow(
         const words = cleanCrit.split(/\s+/).filter((w) => w.length > 2);
         const matchScore = words.filter((w) => cleanRow.includes(w)).length;
 
-        if (words.length > 0 && matchScore === 0 && !cleanRow.includes(cleanCrit) && !cleanCrit.includes(cleanRow)) {
-          continue;
+        if (cleanRow.includes(cleanCrit) || cleanCrit.includes(cleanRow)) {
+          currentScore += 40;
+        } else if (matchScore > 0) {
+          currentScore += Math.min(35, matchScore * 10);
         }
+      }
+
+      // 3. Prioritas tinggi untuk transaksi yang BELUM punya foto
+      if (!hasPhoto) {
+        currentScore += 30;
       }
 
       const item: RecentTransactionItem = {
@@ -1027,17 +1041,18 @@ export async function findMatchingTransactionRow(
         createdAt: String(waktuRaw || '-'),
       };
 
-      // Prioritaskan transaksi yang belum memiliki foto
-      if (!hasPhoto) {
+      // Jika menemukan transaksi tanpa foto yang cocok persis nominal & deskripsi, langsung gunakan
+      if (!hasPhoto && currentScore >= 80) {
         return item;
       }
 
-      if (!candidateAny) {
-        candidateAny = item;
+      if (currentScore > highestScore) {
+        highestScore = currentScore;
+        bestCandidate = item;
       }
     }
 
-    return candidateWithoutPhoto || candidateAny;
+    return bestCandidate;
   } catch (err) {
     console.warn('Gagal mencari transaksi matching:', err);
     return null;

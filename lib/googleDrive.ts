@@ -1,6 +1,45 @@
 import { google } from 'googleapis';
 import { Readable } from 'stream';
+import sharp from 'sharp';
 import { getGoogleAuth } from './googleAuth';
+
+/**
+ * Mengoptimalkan buffer foto (resize & kompresi JPEG) agar ukuran file kecil (~150-300KB)
+ * dan upload ke Google Apps Script super cepat (< 1.5 detik) tanpa timeout di serverless Vercel.
+ */
+export async function optimizeReceiptImage(
+  buffer: Buffer,
+  mimeType: string = 'image/jpeg'
+): Promise<{ buffer: Buffer; mimeType: string }> {
+  try {
+    // Jika bukan file gambar atau buffer sudah sangat kecil (< 150KB), gunakan aslinya
+    if (!mimeType.startsWith('image/') || buffer.length < 150 * 1024) {
+      return { buffer, mimeType };
+    }
+
+    const optimized = await sharp(buffer)
+      .rotate() // Auto-orient berdasarkan EXIF orientation kamera HP
+      .resize({
+        width: 1600,
+        height: 1600,
+        fit: 'inside',
+        withoutEnlargement: true,
+      })
+      .jpeg({
+        quality: 80,
+        progressive: true,
+      })
+      .toBuffer();
+
+    return {
+      buffer: optimized,
+      mimeType: 'image/jpeg',
+    };
+  } catch (err) {
+    console.warn('Gagal optimasi gambar dengan sharp, menggunakan buffer asli:', err);
+    return { buffer, mimeType };
+  }
+}
 
 /**
  * Mengekstrak ID folder dari URL atau string mentah
@@ -22,10 +61,11 @@ export function extractFolderId(rawIdOrUrl?: string): string {
  * 2. Service Account API langsung (untuk Google Workspace)
  */
 export async function uploadReceiptToDrive(
-  buffer: Buffer,
+  rawBuffer: Buffer,
   fileName: string,
-  mimeType: string = 'image/jpeg'
+  rawMimeType: string = 'image/jpeg'
 ): Promise<string | null> {
+  const { buffer, mimeType } = await optimizeReceiptImage(rawBuffer, rawMimeType);
   const gasWebhookUrl = process.env.GOOGLE_DRIVE_GAS_URL;
   const folderId = extractFolderId(process.env.GOOGLE_DRIVE_FOLDER_ID);
 

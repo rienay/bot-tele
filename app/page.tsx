@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useMemo } from 'react';
+import Link from 'next/link';
 import { WebFinanceData, WebTransactionItem } from '@/lib/types';
 
 function formatRupiah(amount: number): string {
@@ -198,16 +199,59 @@ export default function FinanceDashboardPage() {
             </div>
           </a>
 
-          <a
-            href="https://t.me/duit_pwd_bot"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="bot-badge"
-            title="Catat pengeluaran lewat Telegram"
-          >
-            <span>🤖</span>
-            <span>@duit_pwd_bot</span>
-          </a>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+            <Link
+              href="/"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '0.35rem',
+                padding: '0.45rem 0.85rem',
+                borderRadius: '8px',
+                background: '#F43F5E',
+                color: '#ffffff',
+                textDecoration: 'none',
+                fontSize: '0.825rem',
+                fontWeight: 700,
+              }}
+            >
+              <span>💰</span>
+              <span>Keuangan</span>
+            </Link>
+
+            <Link
+              href="/inventaris"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '0.35rem',
+                padding: '0.45rem 0.85rem',
+                borderRadius: '8px',
+                background: '#ffffff',
+                color: '#185abd',
+                border: '1px solid #185abd',
+                textDecoration: 'none',
+                fontSize: '0.825rem',
+                fontWeight: 700,
+                boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
+              }}
+              title="Buka Website Inventaris Barang"
+            >
+              <span>📦</span>
+              <span>Inventaris Barang</span>
+            </Link>
+
+            <a
+              href="https://t.me/duit_pwd_bot"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="bot-badge"
+              title="Catat pengeluaran lewat Telegram"
+            >
+              <span>🤖</span>
+              <span>@duit_pwd_bot</span>
+            </a>
+          </div>
         </div>
       </nav>
 

@@ -30,6 +30,17 @@ import {
   DAFTAR_BULAN,
   NOMINAL_IURAN_DEFAULT,
 } from './kasAnggota';
+import {
+  getAllInventaris,
+  getInventarisStats,
+  tambahInventaris,
+  cariInventaris,
+  generateNextItemCode,
+  normalisasiUnit,
+  getUnitPrefix,
+  DAFTAR_UNIT,
+  InventarisItem,
+} from './inventaris';
 import { uploadReceiptToDrive, getDriveConfigStatus, testDriveUpload } from './googleDrive';
 import { formatPrivateKey, getGoogleAuth } from './googleAuth';
 import { generateNotaPdf, HARGA_PER_KG, rupiahFormat } from './generateNota';
@@ -138,9 +149,12 @@ async function syncBotCommands(api: any) {
       { command: 'cekkas', description: 'Cek kas anggota (lunas & belum bayar)' },
       { command: 'bayarkas', description: 'Catat pembayaran kas anggota' },
       { command: 'anggota', description: 'Daftar & kelola anggota kas' },
+      { command: 'inventaris', description: 'Inventaris barang DKC & Unit' },
+      { command: 'tambahbarang', description: 'Tambah data barang inventaris baru' },
       { command: 'akses', description: 'Kelola hak akses & anggota bot' },
       { command: 'invite', description: 'Cara undang anggota baru' },
       { command: 'linkuang', description: 'Link website keuangan transparan' },
+      { command: 'linkinventaris', description: 'Link tabel web inventaris barang' },
     ];
 
     // Tambahkan command untuk buku kegiatan yang valid (hanya huruf, angka, underscore)
@@ -315,6 +329,10 @@ bot.command(['start', 'help'], async (ctx) => {
       `• /cekkas — *Cek Pembayaran Kas* (siapa yang lunas & belum)\n` +
       `• /bayarkas — *Catat Bayar Kas Anggota* (otomatis masuk ke Kas)\n` +
       `• /anggota — *Kelola Anggota* (daftar, tambah, nonaktifkan)\n\n` +
+      `📦 *Menu Inventaris Barang:*\n` +
+      `• /inventaris — *Inventaris Logistik* (DKC, CYJI, Paspanca, Ubaloka, UNPASA)\n` +
+      `• /tambahbarang — *Tambah Barang Baru* (kode otomatis D0001, C0001, dst)\n` +
+      `• /linkinventaris — *Tabel Web Inventaris* (tampilan tabel Word putih-biru)\n\n` +
       `🌸 *Website Dashboard Keuangan:*\n` +
       `• /linkuang — *Buka Link Web Keuangan* (tampilan pastel & transparan)\n\n` +
       adminMenuText +
@@ -2126,6 +2144,388 @@ bot.command(['pindahsaldo', 'transfersaldo', 'pindah', 'transfer'], async (ctx) 
 });
 
 // ============================================================
+// MODUL INVENTARISASI LOGISTIK (DKC, CYJI, Paspanca, Ubaloka, UNPASA)
+// ============================================================
+const WEB_INVENTARIS_URL = 'https://bot-tele-topaz.vercel.app/inventaris';
+
+/**
+ * Parsing teks format formulir penambahan barang inventaris
+ */
+function parseInventarisText(text: string) {
+  const getField = (regex: RegExp) => {
+    const m = text.match(regex);
+    return m ? m[1].trim() : '';
+  };
+
+  const rawUnit = getField(/(?:Unit|Bagian|Penyelenggara):\s*([^\n]+)/i) || 'DKC';
+  const unit = normalisasiUnit(rawUnit);
+  const nama = getField(/(?:Nama|Nama Barang|Barang|Item):\s*([^\n]+)/i);
+  const jumlah = getField(/(?:Jumlah|Qty|Banyaknya):\s*([^\n]+)/i) || '1';
+  const tahun = getField(/(?:Tahun|Thn):\s*([0-9]{4})/i) || String(new Date().getFullYear());
+  const sumber = getField(/(?:Sumber|Sumber Barang|Asal|Dari):\s*([^\n]+)/i) || 'Pembelian Kas';
+  const kondisi = getField(/(?:Kondisi|Status):\s*([^\n]+)/i) || 'Baik';
+  const keterangan = getField(/(?:Keterangan|Ket|Catatan|Lokasi):\s*([^\n]+)/i) || '-';
+
+  return { unit, nama, jumlah, tahun, sumber, kondisi, keterangan };
+}
+
+/**
+ * Menampilkan ringkasan atau rincian inventaris barang per unit
+ */
+async function handleInventaris(ctx: any, filterParam?: string) {
+  const q = filterParam?.trim();
+
+  // Jika parameter merupakan nama unit yang valid
+  if (q && ['dkc', 'cyji', 'paspanca', 'ubaloka', 'unpasa', 'protokol', 'jurnalis'].includes(q.toLowerCase())) {
+    const unitNorm = normalisasiUnit(q);
+    const items = await getAllInventaris(unitNorm);
+    const unitConfig = DAFTAR_UNIT.find((u) => u.id === unitNorm);
+    const unitName = unitConfig?.name || unitNorm;
+    const prefix = unitConfig?.prefix || 'D';
+
+    if (items.length === 0) {
+      const keyboard = new InlineKeyboard()
+        .text('⬅️ Semua Unit', 'inv_main')
+        .text('➕ Tambah Barang', `inv_add:${unitNorm}`)
+        .row()
+        .url('🌐 Buka Tabel Web', WEB_INVENTARIS_URL);
+
+      await ctx.reply(
+        `📦 *Daftar Inventaris: ${unitName}*\n` +
+          `🏷️ *Prefix Kode:* \`${prefix}0001+\`\n\n` +
+          `_Belum ada barang yang tercatat untuk unit ${unitName}._\n\n` +
+          `💡 Ketik /tambahbarang untuk mendata barang baru!`,
+        { parse_mode: 'Markdown', reply_markup: keyboard }
+      );
+      return;
+    }
+
+    let textList =
+      `📦 *Daftar Inventaris: ${unitName}*\n` +
+      `🏷️ *Prefix Kode:* \`${prefix}0001+\` | Total: *${items.length} Barang*\n` +
+      `━━━━━━━━━━━━━━━━━━━━━\n\n`;
+
+    items.slice(0, 15).forEach((it, idx) => {
+      const isBaik = it.kondisi.toLowerCase().includes('baik');
+      const iconKondisi = isBaik ? '🟢' : '🔴';
+      const fotoText = it.foto ? ` | 📎 [Foto Drive](${it.foto})` : '';
+
+      textList +=
+        `*${idx + 1}.* \`${it.kodeBarang}\` — *${it.namaBarang}*\n` +
+        `   • Jumlah: *${it.jumlah}* | Thn: ${it.tahun}\n` +
+        `   • Sumber: ${it.sumber}\n` +
+        `   • Kondisi: ${iconKondisi} *${it.kondisi}*${fotoText}\n` +
+        `   • Lokasi/Ket: _${it.keterangan || '-' }_\n\n`;
+    });
+
+    if (items.length > 15) {
+      textList += `_...dan ${items.length - 15} barang lainnya. Lihat seluruhnya di website._\n\n`;
+    }
+
+    const keyboard = new InlineKeyboard()
+      .text('⬅️ Semua Unit', 'inv_main')
+      .text('➕ Tambah Barang', `inv_add:${unitNorm}`)
+      .row()
+      .url('🌐 Buka Tabel Web Inventaris', WEB_INVENTARIS_URL);
+
+    await ctx.reply(textList, {
+      parse_mode: 'Markdown',
+      reply_markup: keyboard,
+      link_preview_options: { is_disabled: true },
+    });
+    return;
+  }
+
+  // Jika query pencarian bebas (misal: /barang tenda atau /inventaris D0001)
+  if (q) {
+    const searchResults = await cariInventaris(q);
+    if (searchResults.length === 0) {
+      await ctx.reply(`⚠️ Tidak ditemukan barang inventaris dengan kata kunci *"${q}"*.`);
+      return;
+    }
+
+    let textRes =
+      `🔍 *Hasil Pencarian Inventaris: "${q}"*\n` +
+      `Ditemukan *${searchResults.length} barang*:\n` +
+      `━━━━━━━━━━━━━━━━━━━━━\n\n`;
+
+    searchResults.slice(0, 10).forEach((it, idx) => {
+      const isBaik = it.kondisi.toLowerCase().includes('baik');
+      const iconKondisi = isBaik ? '🟢' : '🔴';
+      const fotoText = it.foto ? ` | 📎 [Foto Drive](${it.foto})` : '';
+
+      textRes +=
+        `*${idx + 1}.* \`${it.kodeBarang}\` — *${it.namaBarang}* (${it.unit})\n` +
+        `   • Jumlah: *${it.jumlah}* | Thn: ${it.tahun} | ${iconKondisi} ${it.kondisi}${fotoText}\n` +
+        `   • Ket: _${it.keterangan || '-' }_\n\n`;
+    });
+
+    const keyboard = new InlineKeyboard()
+      .text('⬅️ Menu Inventaris', 'inv_main')
+      .url('🌐 Buka Tabel Web', WEB_INVENTARIS_URL);
+
+    await ctx.reply(textRes, {
+      parse_mode: 'Markdown',
+      reply_markup: keyboard,
+      link_preview_options: { is_disabled: true },
+    });
+    return;
+  }
+
+  // Tampilkan ringkasan seluruh unit
+  const [stats, items] = await Promise.all([
+    getInventarisStats(),
+    getAllInventaris(),
+  ]);
+
+  let unitsText = '';
+  for (const u of DAFTAR_UNIT) {
+    const dataU = stats.byUnit[u.id] || { count: 0, totalQty: 0 };
+    unitsText += `• *${u.name}* (Kode \`${u.prefix}0001+\`): *${dataU.count} Jenis* (${dataU.totalQty} unit fisik)\n`;
+  }
+
+  const keyboard = new InlineKeyboard()
+    .text('🏛️ DKC (D)', 'inv_unit:DKC')
+    .text('📰 CYJI (C)', 'inv_unit:CYJI')
+    .row()
+    .text('🛡️ Paspanca (PS)', 'inv_unit:Paspanca')
+    .text('🚨 Ubaloka (U)', 'inv_unit:Ubaloka')
+    .row()
+    .text('🎖️ UNPASA (P)', 'inv_unit:UNPASA')
+    .text('➕ Tambah Barang', 'inv_help_add')
+    .row()
+    .url('🌐 Buka Tabel Web Inventaris', WEB_INVENTARIS_URL)
+    .text('🔄 Refresh', 'inv_main');
+
+  await ctx.reply(
+    `📦 *SISTEM INVENTARISASI BARANG LOGISTIK*\n` +
+      `*Kwarcab 11.01 Cilacap*\n\n` +
+      `📊 *Ringkasan Seluruh Unit:*\n` +
+      unitsText + `\n` +
+      `📈 *Total Inventaris:* *${items.length} Jenis Barang* (${stats.totalQuantity} unit fisik)\n` +
+      `🟢 Kondisi Baik: *${stats.byKondisi.Baik || 0}*\n` +
+      `🔴 Rusak / Perbaikan: *${(stats.byKondisi['Rusak Ringan'] || 0) + (stats.byKondisi['Rusak Berat'] || 0)}*\n\n` +
+      `━━━━━━━━━━━━━━━━━━━━━\n` +
+      `👇 *Pilih unit di bawah untuk melihat rincian barang:*`,
+    { parse_mode: 'Markdown', reply_markup: keyboard }
+  );
+}
+
+/**
+ * Menangani penambahan barang inventaris lewat teks
+ */
+async function handleTambahBarang(ctx: any, textParam: string) {
+  const parsed = parseInventarisText(textParam);
+
+  if (!parsed.nama) {
+    await ctx.reply(
+      `➕ *Formulir Tambah Barang Inventaris*\n\n` +
+        `Anda dapat mencatat barang inventaris baru dengan mengirimkan format berikut:\n\n` +
+        `\`\`\`\n` +
+        `/tambahbarang\n` +
+        `Unit: DKC\n` +
+        `Nama: Tenda Dome Kapasitas 4 Orang\n` +
+        `Jumlah: 2 Unit\n` +
+        `Tahun: 2024\n` +
+        `Sumber: Hibah Kwarcab\n` +
+        `Kondisi: Baik\n` +
+        `Keterangan: Lemari logistik\n` +
+        `\`\`\`\n\n` +
+        `💡 *Pilihan Unit & Kode Otomatis:*\n` +
+        `• *DKC* ➔ Prefix \`D0001, D0002...\`\n` +
+        `• *CYJI* ➔ Prefix \`C0001, C0002...\`\n` +
+        `• *Paspanca* ➔ Prefix \`PS0001, PS0002...\`\n` +
+        `• *Ubaloka* ➔ Prefix \`U0001, U0002...\`\n` +
+        `• *UNPASA* ➔ Prefix \`P0001, P0002...\`\n\n` +
+        `📸 *Bisa juga kirim FOTO BARANG* lalu beri caption dengan format di atas, foto akan otomatis tersimpan ke Google Drive!\n\n` +
+        `🌐 _Atau gunakan formulir web langsung di:_ ${WEB_INVENTARIS_URL}`,
+      { parse_mode: 'Markdown' }
+    );
+    return;
+  }
+
+  const itemCode = await generateNextItemCode(parsed.unit);
+  const newItem = await tambahInventaris({
+    kodeBarang: itemCode,
+    namaBarang: parsed.nama,
+    unit: parsed.unit,
+    jumlah: parsed.jumlah,
+    tahun: parsed.tahun,
+    sumber: parsed.sumber,
+    kondisi: parsed.kondisi,
+    foto: '',
+    keterangan: parsed.keterangan,
+  });
+
+  const keyboard = new InlineKeyboard()
+    .text(`📦 Lihat Barang ${parsed.unit}`, `inv_unit:${parsed.unit}`)
+    .url('🌐 Buka Tabel Web', WEB_INVENTARIS_URL);
+
+  await ctx.reply(
+    `✅ *Barang Inventaris Berhasil Dicatat!*\n\n` +
+      `🏷️ *Kode Barang:* \`${newItem.kodeBarang}\`\n` +
+      `📦 *Nama Barang:* *${newItem.namaBarang}*\n` +
+      `🏛️ *Unit:* ${newItem.unit}\n` +
+      `🔢 *Jumlah:* ${newItem.jumlah}\n` +
+      `📅 *Tahun:* ${newItem.tahun}\n` +
+      `💰 *Sumber:* ${newItem.sumber}\n` +
+      `🟢 *Kondisi:* ${newItem.kondisi}\n` +
+      `📍 *Keterangan:* ${newItem.keterangan}\n\n` +
+      `_Data tersimpan otomatis di Google Sheets tab \`Inventaris\` dan langsung tampil di website._`,
+    { parse_mode: 'Markdown', reply_markup: keyboard }
+  );
+}
+
+/**
+ * Menangani penambahan barang inventaris saat pengguna mengirim foto dengan caption
+ */
+async function handleTambahBarangWithPhoto(
+  ctx: any,
+  fileId: string,
+  caption: string,
+  mimeType: string = 'image/jpeg'
+) {
+  const parsed = parseInventarisText(caption);
+
+  if (!parsed.nama) {
+    await ctx.reply(
+      `⚠️ *Nama barang belum dicantumkan!*\n\n` +
+        `Silakan kirim ulang foto dengan caption format:\n\n` +
+        `\`\`\`\n` +
+        `/tambahbarang\n` +
+        `Unit: DKC\n` +
+        `Nama: Nama Barang Anda\n` +
+        `Jumlah: 1 Unit\n` +
+        `Tahun: 2024\n` +
+        `Sumber: Pembelian Kas\n` +
+        `Kondisi: Baik\n` +
+        `Keterangan: Lemari logistik\n` +
+        `\`\`\``,
+      { parse_mode: 'Markdown' }
+    );
+    return;
+  }
+
+  await ctx.reply(`⏳ *Mengunggah foto barang ke Google Drive & mencatat data inventaris...*`, {
+    parse_mode: 'Markdown',
+  });
+  await ctx.replyWithChatAction('upload_photo');
+
+  const file = await ctx.api.getFile(fileId);
+  if (!file.file_path) {
+    throw new Error('Tidak dapat mengunduh foto dari Telegram.');
+  }
+
+  const fileUrl = `https://api.telegram.org/file/bot${process.env.TELEGRAM_BOT_TOKEN}/${file.file_path}`;
+  const res = await fetch(fileUrl);
+  if (!res.ok) {
+    throw new Error(`Gagal fetch file dari Telegram: ${res.statusText}`);
+  }
+
+  const arrayBuffer = await res.arrayBuffer();
+  const buffer = Buffer.from(arrayBuffer);
+
+  const itemCode = await generateNextItemCode(parsed.unit);
+  const fileName = `inventaris_${itemCode}_${Date.now()}.jpg`;
+
+  const driveLink = await uploadReceiptToDrive(buffer, fileName, mimeType).catch((err) => {
+    console.error('Error upload foto inventaris:', err);
+    return null;
+  });
+
+  const newItem = await tambahInventaris({
+    kodeBarang: itemCode,
+    namaBarang: parsed.nama,
+    unit: parsed.unit,
+    jumlah: parsed.jumlah,
+    tahun: parsed.tahun,
+    sumber: parsed.sumber,
+    kondisi: parsed.kondisi,
+    foto: driveLink || '',
+    keterangan: parsed.keterangan,
+  });
+
+  const keyboard = new InlineKeyboard();
+  if (driveLink) {
+    keyboard.url('📸 Buka Foto di Drive', driveLink);
+  }
+  keyboard.row().url('🌐 Buka Tabel Web Inventaris', WEB_INVENTARIS_URL);
+
+  const photoStatus = driveLink
+    ? `📎 *Foto Barang:* [Lihat Foto di Google Drive](${driveLink})`
+    : `⚠️ *Foto Barang:* _Gagal terunggah ke Drive_`;
+
+  await ctx.reply(
+    `✅ *Barang Inventaris Berhasil Dicatat!*\n\n` +
+      `🏷️ *Kode Barang:* \`${newItem.kodeBarang}\`\n` +
+      `📦 *Nama Barang:* *${newItem.namaBarang}*\n` +
+      `🏛️ *Unit:* ${newItem.unit}\n` +
+      `🔢 *Jumlah:* ${newItem.jumlah}\n` +
+      `📅 *Tahun:* ${newItem.tahun}\n` +
+      `💰 *Sumber:* ${newItem.sumber}\n` +
+      `🟢 *Kondisi:* ${newItem.kondisi}\n` +
+      `📍 *Keterangan:* ${newItem.keterangan}\n\n` +
+      `${photoStatus}\n\n` +
+      `_Data tersimpan otomatis di Google Sheets tab \`Inventaris\` dan tampil di tabel website._`,
+    {
+      parse_mode: 'Markdown',
+      reply_markup: keyboard,
+      link_preview_options: { is_disabled: true },
+    }
+  );
+}
+
+// Command: /inventaris dan /barang
+bot.command(['inventaris', 'barang'], async (ctx) => {
+  const text = ctx.message?.text || '';
+  const parts = text.split(' ').slice(1).join(' ').trim();
+  await handleInventaris(ctx, parts || undefined);
+});
+
+// Command: /tambahbarang dan /tambahinventaris
+bot.command(['tambahbarang', 'tambahinventaris'], async (ctx) => {
+  const text = ctx.message?.text || '';
+  const parts = text.split(' ').slice(1).join(' ').trim();
+  await handleTambahBarang(ctx, parts);
+});
+
+// Command: /linkinventaris dan /linkbarang
+bot.command(['linkinventaris', 'linkbarang'], async (ctx) => {
+  const keyboard = new InlineKeyboard().url('📦 Buka Tabel Web Inventaris', WEB_INVENTARIS_URL);
+  await ctx.reply(
+    `📦 *Website Tabel Inventaris Barang*\n\n` +
+      `Buka tabel data inventaris seluruh unit (DKC, Unit CYJI, Unit Paspanca, Unit Ubaloka, dan Unit UNPASA):\n\n` +
+      `👉 [${WEB_INVENTARIS_URL}](${WEB_INVENTARIS_URL})\n\n` +
+      `💡 _Tampilan dalam bentuk tabel bersih bertema Word (putih & biru), memuat foto barang, kode otomatis (D0001, C0001, U0001, P0001, PS0001), jumlah, tahun, sumber, dan kondisi barang._`,
+    { parse_mode: 'Markdown', reply_markup: keyboard }
+  );
+});
+
+// Callback queries untuk Inventaris
+bot.callbackQuery('inv_main', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await handleInventaris(ctx);
+});
+
+bot.callbackQuery(/^inv_unit:(.+)$/, async (ctx) => {
+  const targetUnit = ctx.match[1];
+  await ctx.answerCallbackQuery();
+  await handleInventaris(ctx, targetUnit);
+});
+
+bot.callbackQuery('inv_help_add', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await handleTambahBarang(ctx, '');
+});
+
+bot.callbackQuery(/^inv_add:(.+)$/, async (ctx) => {
+  const targetUnit = ctx.match[1];
+  await ctx.answerCallbackQuery();
+  await handleTambahBarang(ctx, `Unit: ${targetUnit}`);
+});
+
+
+// ============================================================
 // Command: /nota — mulai percakapan buat nota
 // ============================================================
 bot.command('nota', async (ctx) => {
@@ -2647,6 +3047,14 @@ bot.on('message:text', async (ctx) => {
       'linkweb',
       'dashboard',
       'website',
+      'inventaris',
+      'barang',
+      'tambahbarang',
+      'tambahinventaris',
+      'linkinventaris',
+      'linkbarang',
+      'cekfoto',
+      'unggahfoto',
     ];
 
     if (!standardCmds.includes(rawCmd)) {
@@ -2800,6 +3208,18 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
 
     if (!fileId) {
       await ctx.reply('⚠️ Mohon kirimkan file berupa gambar foto nota/struk belanja.');
+      return;
+    }
+
+    // === Cek jika ini adalah foto untuk Inventaris Barang ===
+    const rawCaption = ctx.message.caption || '';
+    if (
+      rawCaption.startsWith('/tambahbarang') ||
+      rawCaption.startsWith('/tambahinventaris') ||
+      rawCaption.startsWith('/barang') ||
+      /^(unit:|nama:|barang:)/i.test(rawCaption.trim())
+    ) {
+      await handleTambahBarangWithPhoto(ctx, fileId, rawCaption, mimeType);
       return;
     }
 
@@ -3013,7 +3433,44 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
       parsed.noteLink = driveLink;
     }
 
-    // Simpan ke Google Sheets (sudah otomatis menyertakan link Drive di kolom F)
+    // === Cek apakah foto ini cocok dengan transaksi yang SUDAH ADA di Google Sheets yang belum ada fotonya ===
+    // Menghindari duplikasi transaksi jika pengguna mencatat teks terlebih dahulu baru mengirimkan fotonya
+    const matchExisting = await findMatchingTransactionRowAcrossBooks(activeBook, {
+      amount: parsed.amount,
+      description: parsed.description,
+      date: parsed.date,
+    });
+
+    if (matchExisting && !matchExisting.item.hasPhoto) {
+      const { item: matchingRow, bookName: targetBook } = matchExisting;
+      if (driveLink) {
+        await updateTransactionNoteLink(matchingRow.rowNumber, driveLink, targetBook);
+      }
+
+      const keyboard = new InlineKeyboard();
+      if (driveLink) {
+        keyboard.url('📸 Buka Foto di Drive', driveLink);
+      }
+      keyboard.text('📸 Cek Foto Lainnya', `cekfoto_refresh:${targetBook}`);
+
+      await ctx.reply(
+        `✅ *Foto Nota Berhasil Ditautkan Langsung ke Transaksi!*\n\n` +
+          `📖 *Buku Kegiatan:* \`${targetBook}\` _(Tab Sheets: ${targetBook})_\n` +
+          `📝 *Transaksi:* *${matchingRow.description}*\n` +
+          `💰 *Total Nominal:* ${formatRupiah(matchingRow.amount)}\n` +
+          `📌 *Baris Sheets:* #${matchingRow.rowNumber}\n\n` +
+          (driveLink ? `🔗 [Buka Foto di Google Drive](${driveLink})\n\n` : '') +
+          `_Tautan foto otomatis masuk ke Google Sheets pada baris transaksi tersebut tanpa membuat catatan dobel!_`,
+        {
+          parse_mode: 'Markdown',
+          reply_markup: keyboard,
+          link_preview_options: { is_disabled: true },
+        }
+      );
+      return;
+    }
+
+    // Jika tidak ditemukan transaksi lama yang cocok, simpan sebagai transaksi baru di Google Sheets
     const rowNumber = await appendTransaction(parsed, activeBook);
 
     const emoji = parsed.type === 'Pemasukan' ? '🟢' : '🔴';
