@@ -144,7 +144,10 @@ export async function getAllUsers(forceRefresh = false): Promise<UserAccessRecor
     const id = String(r[0]).trim();
     const name = String(r[1] || 'Pengguna').trim();
     const username = String(r[2] || '').trim();
-    const role = (String(r[3] || 'Member').trim() as UserRole) || 'Member';
+    const rawRole = String(r[3] || 'Member').trim();
+    let role: UserRole = 'Member';
+    if (rawRole.toLowerCase().includes('admin')) role = 'Admin';
+    else if (rawRole.toLowerCase().includes('inv')) role = 'Inventaris';
     const status = (String(r[4] || 'Aktif').trim() as UserAccessStatus) || 'Aktif';
     const addedAt = String(r[5] || '').trim();
 
@@ -421,4 +424,85 @@ export async function getUserRecord(id: string | number): Promise<UserAccessReco
   const strId = String(id).trim();
   const users = await getAllUsers();
   return users.find((u) => u.id === strId) || null;
+}
+
+/**
+ * Mengambil role seorang user: 'Admin' | 'Member' | 'Inventaris' | null
+ */
+export async function getUserRole(telegramId: number | string): Promise<UserRole | null> {
+  const strId = String(telegramId).trim();
+  if (strId === getAdminTelegramId()) return 'Admin';
+
+  const user = await getUserRecord(strId);
+  return user?.role || null;
+}
+
+/**
+ * Cek apakah seorang user hanya memiliki akses khusus inventaris
+ */
+export async function isUserInventoryOnly(telegramId: number | string): Promise<boolean> {
+  const strId = String(telegramId).trim();
+  if (strId === getAdminTelegramId()) return false;
+
+  const role = await getUserRole(strId);
+  return role === 'Inventaris';
+}
+
+/**
+ * Cek apakah seorang user diizinkan mengakses fitur keuangan (Admin atau Member)
+ */
+export async function isUserAllowedFinance(telegramId: number | string): Promise<boolean> {
+  const strId = String(telegramId).trim();
+  if (strId === getAdminTelegramId()) return true;
+
+  const role = await getUserRole(strId);
+  return role === 'Admin' || role === 'Member';
+}
+
+/**
+ * Mengubah role seorang user di Google Sheets
+ */
+export async function setUserRole(
+  telegramId: number | string,
+  newRole: UserRole
+): Promise<boolean> {
+  const strId = String(telegramId).trim();
+  if (strId === getAdminTelegramId()) {
+    throw new Error('Role Admin utama tidak dapat diubah.');
+  }
+
+  await ensureUserAccessSheet();
+  const auth = getGoogleAuth();
+  const sheets = google.sheets({ version: 'v4', auth });
+  const spreadsheetId = getSpreadsheetId();
+
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: `'${SHEET_AKSES_BOT}'!A2:F`,
+  });
+
+  const rows = res.data.values || [];
+  let existingIndex = -1;
+
+  for (let i = 0; i < rows.length; i++) {
+    if (rows[i][0] && String(rows[i][0]).trim() === strId) {
+      existingIndex = i + 2;
+      break;
+    }
+  }
+
+  if (existingIndex <= 0) return false;
+
+  const nowJakarta = formatJakartaNow();
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: `'${SHEET_AKSES_BOT}'!D${existingIndex}:F${existingIndex}`,
+    valueInputOption: 'USER_ENTERED',
+    requestBody: {
+      values: [[newRole, 'Aktif', nowJakarta]],
+    },
+  });
+
+  cachedUsers = null;
+  return true;
 }

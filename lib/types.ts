@@ -70,7 +70,7 @@ export interface TransferBalanceResult {
   date: string;
 }
 
-export type UserRole = 'Admin' | 'Member';
+export type UserRole = 'Admin' | 'Member' | 'Inventaris';
 export type UserAccessStatus = 'Aktif' | 'Menunggu' | 'Ditolak' | 'Nonaktif';
 
 export interface UserAccessRecord {

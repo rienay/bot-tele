@@ -44,7 +44,7 @@ import {
 import { uploadReceiptToDrive, getDriveConfigStatus, testDriveUpload } from './googleDrive';
 import { formatPrivateKey, getGoogleAuth } from './googleAuth';
 import { generateNotaPdf, HARGA_PER_KG, rupiahFormat } from './generateNota';
-import { ExpenseDetail } from './types';
+import { ExpenseDetail, UserRole } from './types';
 import {
   checkUserAccess,
   isUserAdmin,
@@ -55,6 +55,10 @@ import {
   getAllUsers,
   getAdminTelegramId,
   getUserRecord,
+  getUserRole,
+  isUserInventoryOnly,
+  isUserAllowedFinance,
+  setUserRole,
 } from './userAccess';
 
 // Paksa IPv4 untuk menghindari timeout koneksi IPv6 ke server Telegram di jaringan Windows/ISP lokal
@@ -151,6 +155,7 @@ async function syncBotCommands(api: any) {
       { command: 'anggota', description: 'Daftar & kelola anggota kas' },
       { command: 'inventaris', description: 'Inventaris barang DKC & Unit' },
       { command: 'tambahbarang', description: 'Tambah data barang inventaris baru' },
+      { command: 'izinkaninv', description: 'Undang/izinkan khusus inventaris' },
       { command: 'akses', description: 'Kelola hak akses & anggota bot' },
       { command: 'invite', description: 'Cara undang anggota baru' },
       { command: 'linkuang', description: 'Link website keuangan transparan' },
@@ -237,7 +242,10 @@ bot.use(async (ctx, next) => {
 
     const adminId = getAdminTelegramId();
     const adminKb = new InlineKeyboard()
-      .text('✅ Izinkan Akses', `user_access:approve:${senderId}`)
+      .text('💼 Full (Keuangan & Inv)', `user_access:approve:${senderId}:Member`)
+      .row()
+      .text('📦 Khusus Inventaris Saja', `user_access:approve:${senderId}:Inventaris`)
+      .row()
       .text('❌ Tolak', `user_access:reject:${senderId}`);
 
     const nowJakarta = new Intl.DateTimeFormat('id-ID', {
@@ -254,7 +262,7 @@ bot.use(async (ctx, next) => {
         `🔗 *Username:* ${username || '_(tidak ada)_'}\n` +
         `🆔 *Telegram ID:* \`${senderId}\`\n` +
         `📅 *Waktu:* ${nowJakarta}\n\n` +
-        `Apakah Anda ingin mengizinkan pengguna ini untuk mencatat keuangan?`,
+        `Silakan pilih tingkat hak akses untuk pengguna ini:`,
       {
         parse_mode: 'Markdown',
         reply_markup: adminKb,
@@ -265,6 +273,25 @@ bot.use(async (ctx, next) => {
     await ctx.reply('Terjadi kendala saat memproses permintaan akses. Silakan coba sesaat lagi.');
   }
 });
+
+// Helper: Pengecekan izin akses modul keuangan
+async function checkFinancePermission(ctx: any): Promise<boolean> {
+  const senderId = String(ctx.from?.id);
+  const isAllowed = await isUserAllowedFinance(senderId);
+  if (!isAllowed) {
+    await ctx.reply(
+      `⛔ *Akses Dibatasi:*\n\n` +
+        `Akun Anda terdaftar dengan hak akses *Khusus Inventaris* (tidak memiliki izin untuk melihat atau mencatat kas/keuangan).\n\n` +
+        `📦 *Fitur yang dapat Anda gunakan:*\n` +
+        `• /inventaris — Lihat dan cari data barang\n` +
+        `• /tambahbarang — Tambah barang baru\n` +
+        `• /linkinventaris — Buka tabel inventaris lengkap di website`,
+      { parse_mode: 'Markdown' }
+    );
+    return false;
+  }
+  return true;
+}
 
 // Helper: Membangun tombol keyboard buku
 async function buildBooksKeyboard(activeBook: string): Promise<InlineKeyboard> {
@@ -285,6 +312,37 @@ async function buildBooksKeyboard(activeBook: string): Promise<InlineKeyboard> {
 bot.command(['start', 'help'], async (ctx) => {
   const senderId = ctx.from?.id;
   const chatId = ctx.chat.id;
+
+  // Jika user khusus inventaris, tampilkan menu khusus inventaris
+  const userRole = await getUserRole(senderId || 0);
+  if (userRole === 'Inventaris') {
+    const invKeyboard = new InlineKeyboard()
+      .text('📦 Daftar Barang', 'inv_main')
+      .text('➕ Tambah Barang', 'inv_help_add')
+      .row()
+      .url('🌐 Buka Tabel Web', 'https://bot-tele-topaz.vercel.app/inventaris');
+
+    await ctx.reply(
+      `👋 *Halo! Selamat Datang di Bot Inventaris Logistik.*\n\n` +
+        `Akun Anda terdaftar sebagai *Staff Inventaris* (DKC Cilacap & Unit Kerja).\n\n` +
+        `📦 *Menu Inventaris Barang:*\n` +
+        `• /inventaris — Lihat dan cari data barang per unit (DKC, CYJI, Paspanca, Ubaloka, UNPASA)\n` +
+        `• /tambahbarang — Tambah barang baru (bisa langsung kirim foto barang + caption)\n` +
+        `• /linkinventaris — Buka tabel inventaris lengkap di website\n\n` +
+        `📸 *Cara Cepat Mendata Barang:*\n` +
+        `Kirim foto barang langsung ke chat ini dengan keterangan:\n` +
+        `\`Nama: Dispenser Miyako\`\n` +
+        `\`Unit: DKC\`\n` +
+        `\`Jumlah: 1\`\n` +
+        `\`Kondisi: Baik\`\n\n` +
+        `🆔 _ID Telegram Anda: \`${senderId}\`_`,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: invKeyboard,
+      }
+    );
+    return;
+  }
 
   const [activeBook, books, isAdmin] = await Promise.all([
     getUserActiveBook(chatId),
@@ -308,7 +366,8 @@ bot.command(['start', 'help'], async (ctx) => {
     ? `🔐 *Menu Hak Akses & Monitoring (Admin):*\n` +
       `• /akses — Kelola & cabut hak akses anggota bot\n` +
       `• /invite — Panduan mengundang anggota baru\n` +
-      `• /izinkan <ID> [Nama] — Izinkan akses anggota manual\n` +
+      `• /izinkaninv <ID> [Nama] — *Undang khusus inventaris saja*\n` +
+      `• /izinkan <ID> [Nama] — Izinkan akses anggota (Full)\n` +
       `• /cabut <ID> — Cabut izin akses anggota\n\n`
     : '';
 
@@ -351,6 +410,7 @@ bot.command(['start', 'help'], async (ctx) => {
 
 // Command: /buat (Membuat kegiatan / buku baru)
 bot.command('buat', async (ctx) => {
+  if (!(await checkFinancePermission(ctx))) return;
   const chatId = ctx.chat.id;
   createBookStates.set(chatId, true);
   notaStates.delete(chatId);
@@ -368,6 +428,7 @@ bot.command('buat', async (ctx) => {
 
 // Command: /kas (Beralih ke buku Kas Utama)
 bot.command('kas', async (ctx) => {
+  if (!(await checkFinancePermission(ctx))) return;
   const chatId = ctx.chat.id;
   await setUserActiveBook(chatId, DEFAULT_BOOK_NAME);
   await ctx.reply(
@@ -380,6 +441,7 @@ bot.command('kas', async (ctx) => {
 
 // Command: /buku (Melihat & memilih buku yang ada)
 bot.command('buku', async (ctx) => {
+  if (!(await checkFinancePermission(ctx))) return;
   const chatId = ctx.chat.id;
   const activeBook = await getUserActiveBook(chatId);
   const keyboard = await buildBooksKeyboard(activeBook);
@@ -397,6 +459,7 @@ bot.command('buku', async (ctx) => {
 
 // Handler tombol Inline Keyboard (switch_book:nama_buku)
 bot.callbackQuery(/^switch_book:(.+)$/, async (ctx) => {
+  if (!(await checkFinancePermission(ctx))) return;
   const targetBook = ctx.match[1];
   const chatId = ctx.chat?.id;
   if (!chatId) return;
@@ -429,9 +492,10 @@ bot.callbackQuery(/^switch_book:(.+)$/, async (ctx) => {
 // SISTEM KONTROL AKSES ANGGOTA & MONITORING ADMIN
 // ============================================================
 
-// Callback: Persetujuan akses anggota baru oleh Admin
-bot.callbackQuery(/^user_access:approve:(.+)$/, async (ctx) => {
+// Callback: Persetujuan akses anggota baru oleh Admin (Full / Khusus Inventaris)
+bot.callbackQuery(/^user_access:approve:([^:]+)(?::([^:]+))?$/, async (ctx) => {
   const targetId = ctx.match[1];
+  const chosenRole = (ctx.match[2] as UserRole) || 'Member';
   const adminId = String(ctx.from?.id);
   const isAdmin = await isUserAdmin(adminId);
 
@@ -441,8 +505,9 @@ bot.callbackQuery(/^user_access:approve:(.+)$/, async (ctx) => {
   }
 
   try {
-    await approveUser(targetId);
-    await ctx.answerCallbackQuery({ text: '✅ Akses anggota berhasil disetujui!' });
+    await approveUser(targetId, undefined, undefined, chosenRole);
+    const roleTitle = chosenRole === 'Inventaris' ? 'Khusus Inventaris' : 'Full (Keuangan & Inventaris)';
+    await ctx.answerCallbackQuery({ text: `✅ Akses disetujui: ${roleTitle}` });
 
     const targetUser = await getUserRecord(targetId);
     const targetName = targetUser?.name || 'Anggota';
@@ -453,26 +518,92 @@ bot.callbackQuery(/^user_access:approve:(.+)$/, async (ctx) => {
         `✅ *Akses Berhasil Disetujui!*\n\n` +
           `👤 *Nama:* ${targetName} ${targetUname}\n` +
           `🆔 *Telegram ID:* \`${targetId}\`\n` +
-          `Status: *Aktif (Member)*\n\n` +
-          `Pengguna sekarang dapat menggunakan bot untuk mencatat transaksi dan aktivitasnya akan dipantau di chat ini.`,
+          `Peran: *${roleTitle}*\n\n` +
+          (chosenRole === 'Inventaris'
+            ? `Pengguna ini hanya dapat mengelola & melihat data inventaris logistik barang (tidak dapat mengakses/melihat catatan kas & keuangan).`
+            : `Pengguna sekarang dapat menggunakan bot untuk mencatat transaksi keuangan dan aktivitasnya akan dipantau di chat ini.`),
         { parse_mode: 'Markdown' }
       );
     } catch {}
 
     // Kirim notifikasi ke anggota yang disetujui
-    await ctx.api.sendMessage(
-      targetId,
-      `🎉 *Selamat! Akses Anda Telah Disetujui Admin!* 🚀\n\n` +
-        `Halo *${targetName}*, sekarang Anda sudah dapat menggunakan bot ini untuk mencatat keuangan & kas.\n\n` +
-        `💡 *Cara Cepat Mencatat:*\n` +
-        `• Kirim teks biasa: \`makan siang 35rb\`, \`beli bensin 50rb\`\n` +
-        `• Kirim foto struk/nota belanja: otomatis dibaca AI!\n` +
-        `• Ketik /start untuk melihat menu buku kas dan fitur lainnya.`,
-      { parse_mode: 'Markdown' }
-    ).catch(console.error);
+    if (chosenRole === 'Inventaris') {
+      await ctx.api.sendMessage(
+        targetId,
+        `🎉 *Selamat! Akses Anda Telah Disetujui Admin!* 📦\n\n` +
+          `Halo *${targetName}*, akun Anda telah diaktifkan dengan hak akses *Staff Inventaris Barang*.\n\n` +
+          `📋 *Fitur Inventaris yang dapat Anda gunakan:*\n` +
+          `• /inventaris — Lihat & cari data barang (DKC, CYJI, Paspanca, Ubaloka, UNPASA)\n` +
+          `• /tambahbarang — Tambah barang inventaris baru (bisa kirim foto barang langsung)\n` +
+          `• /linkinventaris — Buka tabel inventaris lengkap di website\n\n` +
+          `Ketik /start untuk membuka menu inventaris.`,
+        { parse_mode: 'Markdown' }
+      ).catch(console.error);
+    } else {
+      await ctx.api.sendMessage(
+        targetId,
+        `🎉 *Selamat! Akses Anda Telah Disetujui Admin!* 🚀\n\n` +
+          `Halo *${targetName}*, sekarang Anda sudah dapat menggunakan bot ini untuk mencatat keuangan & kas.\n\n` +
+          `💡 *Cara Cepat Mencatat:*\n` +
+          `• Kirim teks biasa: \`makan siang 35rb\`, \`beli bensin 50rb\`\n` +
+          `• Kirim foto struk/nota belanja: otomatis dibaca AI!\n` +
+          `• Ketik /start untuk melihat menu buku kas dan fitur lainnya.`,
+        { parse_mode: 'Markdown' }
+      ).catch(console.error);
+    }
   } catch (error: any) {
     console.error('Error approving user:', error);
     await ctx.answerCallbackQuery({ text: `Gagal: ${error?.message || 'Error internal'}`, show_alert: true });
+  }
+});
+
+// Callback: Mengubah peran anggota (Full / Khusus Inventaris)
+bot.callbackQuery(/^user_access:setrole:([^:]+):([^:]+)$/, async (ctx) => {
+  const targetId = ctx.match[1];
+  const newRole = ctx.match[2] as UserRole;
+  const adminId = String(ctx.from?.id);
+  const isAdmin = await isUserAdmin(adminId);
+
+  if (!isAdmin) {
+    await ctx.answerCallbackQuery({ text: '⛔ Hanya Admin yang dapat mengubah hak akses!', show_alert: true });
+    return;
+  }
+
+  try {
+    await setUserRole(targetId, newRole);
+    const roleName = newRole === 'Inventaris' ? 'Khusus Inventaris' : 'Full (Keuangan & Inventaris)';
+    await ctx.answerCallbackQuery({ text: `✅ Peran diubah ke: ${roleName}` });
+
+    const targetUser = await getUserRecord(targetId);
+    const targetName = targetUser?.name || 'Anggota';
+
+    try {
+      await ctx.editMessageText(
+        `✅ *Peran Anggota Berhasil Diperbarui!*\n\n` +
+          `👤 *Nama:* ${targetName}\n` +
+          `🆔 *Telegram ID:* \`${targetId}\`\n` +
+          `Peran Baru: *${roleName}*\n\n` +
+          `Ketik /akses untuk melihat daftar anggota kembali.`,
+        { parse_mode: 'Markdown' }
+      );
+    } catch {}
+
+    // Kirim notifikasi ke anggota
+    if (newRole === 'Inventaris') {
+      await ctx.api.sendMessage(
+        targetId,
+        `ℹ️ *Pemberitahuan Hak Akses:*\nAkun Anda sekarang disetel ke *Staff Inventaris Barang*.\nAnda dapat menggunakan fitur inventaris seperti /inventaris, /tambahbarang, dan /linkinventaris.`,
+        { parse_mode: 'Markdown' }
+      ).catch(() => {});
+    } else {
+      await ctx.api.sendMessage(
+        targetId,
+        `ℹ️ *Pemberitahuan Hak Akses:*\nAkun Anda sekarang memiliki akses *Full (Keuangan & Inventaris)*.\nAnda dapat mencatat pengeluaran kas dan upload bukti nota belanja.`,
+        { parse_mode: 'Markdown' }
+      ).catch(() => {});
+    }
+  } catch (err: any) {
+    await ctx.answerCallbackQuery({ text: `Gagal: ${err?.message || 'Error internal'}`, show_alert: true });
   }
 });
 
@@ -575,8 +706,19 @@ bot.command(['akses', 'aksesbot', 'kelolaakses'], async (ctx) => {
   if (activeMembers.length > 0) {
     text += `👥 *Anggota Aktif (${activeMembers.length}):*\n`;
     activeMembers.forEach((u, i) => {
-      text += `${i + 1}. *${u.name}* ${u.username ? `(@${u.username})` : ''} — \`${u.id}\`\n`;
-      keyboard.text(`❌ Cabut: ${u.name.slice(0, 15)}`, `user_access:revoke:${u.id}`).row();
+      const roleLabel = u.role === 'Inventaris' ? '📦 Khusus Inventaris' : '💼 Full (Keuangan)';
+      text += `${i + 1}. *${u.name}* ${u.username ? `(@${u.username})` : ''} — \`${u.id}\`\n   Peran: _${roleLabel}_\n`;
+      if (u.role === 'Inventaris') {
+        keyboard
+          .text(`💼 Ubah ke Full`, `user_access:setrole:${u.id}:Member`)
+          .text(`❌ Cabut`, `user_access:revoke:${u.id}`)
+          .row();
+      } else {
+        keyboard
+          .text(`📦 Ubah ke Inv`, `user_access:setrole:${u.id}:Inventaris`)
+          .text(`❌ Cabut`, `user_access:revoke:${u.id}`)
+          .row();
+      }
     });
     text += `\n`;
   } else {
@@ -587,8 +729,11 @@ bot.command(['akses', 'aksesbot', 'kelolaakses'], async (ctx) => {
     text += `⏳ *Menunggu Persetujuan (${pendingMembers.length}):*\n`;
     pendingMembers.forEach((u, i) => {
       text += `${i + 1}. *${u.name}* ${u.username ? `(@${u.username})` : ''} — \`${u.id}\`\n`;
-      keyboard.text(`✅ Izinkan ${u.name.slice(0, 10)}`, `user_access:approve:${u.id}`)
-        .text(`❌ Tolak`, `user_access:reject:${u.id}`).row();
+      keyboard
+        .text(`💼 Full`, `user_access:approve:${u.id}:Member`)
+        .text(`📦 Khusus Inv`, `user_access:approve:${u.id}:Inventaris`)
+        .text(`❌ Tolak`, `user_access:reject:${u.id}`)
+        .row();
     });
     text += `\n`;
   }
@@ -597,15 +742,19 @@ bot.command(['akses', 'aksesbot', 'kelolaakses'], async (ctx) => {
     text += `🚫 *Nonaktif / Ditolak (${inactiveMembers.length}):*\n`;
     inactiveMembers.forEach((u, i) => {
       text += `${i + 1}. ${u.name} — \`${u.id}\` (${u.status})\n`;
-      keyboard.text(`🔄 Pulihkan ${u.name.slice(0, 10)}`, `user_access:approve:${u.id}`).row();
+      keyboard
+        .text(`💼 Pulihkan (Full)`, `user_access:approve:${u.id}:Member`)
+        .text(`📦 Pulihkan (Inv)`, `user_access:approve:${u.id}:Inventaris`)
+        .row();
     });
     text += `\n`;
   }
 
   text += `💡 *Perintah Cepat Admin:*\n` +
     `• Ketik /invite untuk petunjuk mengundang teman\n` +
-    `• Ketik \`/izinkan <ID> [Nama]\` untuk izinkan langsung\n` +
-    `• Ketik \`/cabut <ID>\` untuk cabut akses manual`;
+    `• Ketik \`/izinkaninv <ID> [Nama]\` — Izinkan *Khusus Inventaris Saja*\n` +
+    `• Ketik \`/izinkan <ID> [Nama]\` — Izinkan *Full (Keuangan & Inv)*\n` +
+    `• Ketik \`/cabut <ID>\` — Cabut akses manual`;
 
   await ctx.reply(text, {
     parse_mode: 'Markdown',
@@ -633,20 +782,74 @@ bot.command(['invite', 'undang'], async (ctx) => {
   await ctx.reply(
     `📩 *Cara Mengundang Anggota Baru:*\n\n` +
       `1. *Bagikan Link Bot:*\n` +
-      `   Kirim link bot ini ke rekan Anda:\n` +
+      `   Kirimkan link bot ini ke rekan Anda:\n` +
       `   👉 ${link}\n\n` +
       `2. *Teman Menekan Tombol /start:*\n` +
-      `   Minta teman Anda untuk membuka bot tersebut dan klik tombol *Start*.\n\n` +
-      `3. *Persetujuan Realtime (Interactive):*\n` +
-      `   Bot akan otomatis mengirim pesan konfirmasi ke chat Anda ini berisi tombol:\n` +
-      `   [ ✅ *Izinkan Akses* ] dan [ ❌ *Tolak* ]\n\n` +
-      `4. *Otomatis Terhubung & Dipantau:*\n` +
-      `   Setelah Anda klik *Izinkan*, teman Anda langsung bisa mencatat keuangan dan *setiap kali mereka mencatat transaksi / upload nota, Anda akan langsung menerima laporan realtime di sini!*\n\n` +
-      `💡 *Atau izinkan langsung tanpa menunggu mereka chat:*\n` +
-      `Ketik: \`/izinkan <ID_Telegram> [Nama]\`\n` +
-      `Contoh: \`/izinkan 12345678 Sulis\``,
+      `   Minta rekan Anda membuka bot tersebut lalu klik tombol *Start*.\n\n` +
+      `3. *Persetujuan Realtime (Pilih Hak Akses):*\n` +
+      `   Bot akan otomatis mengirimkan notifikasi ke chat Anda ini dengan pilihan:\n` +
+      `   • [ 💼 *Full (Keuangan & Inv)* ] — Bisa catat kas, nota, & inventaris\n` +
+      `   • [ 📦 *Khusus Inventaris Saja* ] — *Hanya bisa mengelola inventaris barang!*\n` +
+      `   • [ ❌ *Tolak* ]\n\n` +
+      `4. *Atau Izinkan Manual Langsung (Tanpa Tunggu Rekan Chat):*\n` +
+      `   • *Khusus Inventaris Saja:*\n` +
+      `     \`/izinkaninv <ID_Telegram> [Nama]\`\n` +
+      `     _Contoh:_ \`/izinkaninv 12345678 Oki\`\n\n` +
+      `   • *Full Keuangan & Inventaris:*\n` +
+      `     \`/izinkan <ID_Telegram> [Nama]\`\n` +
+      `     _Contoh:_ \`/izinkan 12345678 Sulis\``,
     { parse_mode: 'Markdown', link_preview_options: { is_disabled: true } }
   );
+});
+
+// Command: /izinkaninv (Undang / izinkan anggota khusus modul inventaris)
+bot.command(['izinkaninv', 'approveinv', 'undanginv', 'inviteinv'], async (ctx) => {
+  const senderId = String(ctx.from?.id);
+  const isAdmin = await isUserAdmin(senderId);
+  if (!isAdmin) {
+    await ctx.reply('⛔ Fitur ini hanya dapat diakses oleh Admin.');
+    return;
+  }
+
+  const text = ctx.message?.text || '';
+  const parts = text.split(' ').slice(1);
+  const targetId = parts[0]?.trim();
+  const targetName = parts.slice(1).join(' ').trim() || 'Staff Inventaris';
+
+  if (!targetId || !/^\d+$/.test(targetId)) {
+    await ctx.reply(
+      `💡 *Format Mengundang Khusus Inventaris:*\n` +
+        `\`/izinkaninv <ID_Telegram> [Nama]\`\n\n` +
+        `Contoh:\n` +
+        `\`/izinkaninv 12345678 Oki\`\n\n` +
+        `_Pengguna akan langsung memiliki akses khusus modul inventaris tanpa bisa melihat atau mengelola kas/keuangan._`,
+      { parse_mode: 'Markdown' }
+    );
+    return;
+  }
+
+  try {
+    await approveUser(targetId, targetName, undefined, 'Inventaris');
+    await ctx.reply(
+      `✅ *Berhasil!* Pengguna *${targetName}* (\`${targetId}\`) telah diberikan izin akses *Khusus Inventaris*.\n\n` +
+        `📌 Akun ini hanya dapat mengelola data inventaris barang (tidak memiliki akses keuangan/kas).`,
+      { parse_mode: 'Markdown' }
+    );
+
+    await ctx.api.sendMessage(
+      targetId,
+      `🎉 *Selamat! Akun Anda telah diizinkan oleh Admin.* 📦\n\n` +
+        `Anda didaftarkan sebagai *Staff Inventaris* (DKC Cilacap & Unit Kerja).\n\n` +
+        `📋 *Fitur Inventaris yang dapat Anda gunakan:*\n` +
+        `• /inventaris — Lihat dan cari data barang\n` +
+        `• /tambahbarang — Tambah barang baru (bisa kirim foto barang langsung)\n` +
+        `• /linkinventaris — Buka tabel inventaris lengkap di website\n\n` +
+        `Ketik /start untuk membuka menu.`,
+      { parse_mode: 'Markdown' }
+    ).catch(() => {});
+  } catch (err: any) {
+    await ctx.reply(`❌ Gagal memberikan izin inventaris: ${err?.message || 'Error internal'}`);
+  }
 });
 
 // Command: /izinkan
@@ -661,28 +864,52 @@ bot.command(['izinkan', 'approve'], async (ctx) => {
   const text = ctx.message?.text || '';
   const parts = text.split(' ').slice(1);
   const targetId = parts[0]?.trim();
-  const targetName = parts.slice(1).join(' ').trim() || 'Anggota';
 
   if (!targetId || !/^\d+$/.test(targetId)) {
     await ctx.reply(
-      `💡 *Format Perintah:*\n\`/izinkan <ID_Telegram> [Nama]\`\n\nContoh: \`/izinkan 12345678 Sulis\``,
+      `💡 *Format Perintah:*\n` +
+        `• Full: \`/izinkan <ID_Telegram> [Nama]\`\n` +
+        `• Khusus Inventaris: \`/izinkaninv <ID_Telegram> [Nama]\`\n\n` +
+        `Contoh: \`/izinkan 12345678 Sulis\``,
       { parse_mode: 'Markdown' }
     );
     return;
   }
 
+  const lastPart = parts[parts.length - 1]?.toLowerCase();
+  const isInv = lastPart === 'inv' || lastPart === 'inventaris';
+  const role: UserRole = isInv ? 'Inventaris' : 'Member';
+  const targetName = isInv
+    ? parts.slice(1, -1).join(' ').trim() || 'Staff Inventaris'
+    : parts.slice(1).join(' ').trim() || 'Anggota';
+
   try {
-    await approveUser(targetId, targetName);
+    await approveUser(targetId, targetName, undefined, role);
+    const roleDesc = role === 'Inventaris' ? 'Khusus Inventaris' : 'Full (Keuangan & Inventaris)';
     await ctx.reply(
-      `✅ *Berhasil!* Pengguna *${targetName}* (\`${targetId}\`) telah diberikan izin akses ke bot.`,
+      `✅ *Berhasil!* Pengguna *${targetName}* (\`${targetId}\`) telah diberikan izin akses *${roleDesc}*.`,
       { parse_mode: 'Markdown' }
     );
 
-    await ctx.api.sendMessage(
-      targetId,
-      `🎉 *Selamat! Akun Anda telah diizinkan oleh Admin.* Sekarang Anda dapat menggunakan bot ini untuk mencatat keuangan.\nKetik /start untuk memulai.`,
-      { parse_mode: 'Markdown' }
-    ).catch(() => {});
+    if (role === 'Inventaris') {
+      await ctx.api.sendMessage(
+        targetId,
+        `🎉 *Selamat! Akun Anda telah diizinkan oleh Admin.* 📦\n\n` +
+          `Anda didaftarkan sebagai *Staff Inventaris* (DKC Cilacap & Unit Kerja).\n\n` +
+          `📋 *Fitur Inventaris yang dapat Anda gunakan:*\n` +
+          `• /inventaris — Lihat dan cari data barang\n` +
+          `• /tambahbarang — Tambah barang baru (bisa kirim foto barang langsung)\n` +
+          `• /linkinventaris — Buka tabel inventaris lengkap di website\n\n` +
+          `Ketik /start untuk membuka menu.`,
+        { parse_mode: 'Markdown' }
+      ).catch(() => {});
+    } else {
+      await ctx.api.sendMessage(
+        targetId,
+        `🎉 *Selamat! Akun Anda telah diizinkan oleh Admin.* Sekarang Anda dapat menggunakan bot ini untuk mencatat keuangan.\nKetik /start untuk memulai.`,
+        { parse_mode: 'Markdown' }
+      ).catch(() => {});
+    }
   } catch (err: any) {
     await ctx.reply(`❌ Gagal memberikan izin: ${err?.message || 'Error internal'}`);
   }
@@ -730,6 +957,7 @@ bot.command(['cabut', 'revoke'], async (ctx) => {
 
 // Command: /linkuang (Link website keuangan transparan)
 bot.command(['linkuang', 'linkweb', 'dashboard', 'website'], async (ctx) => {
+  if (!(await checkFinancePermission(ctx))) return;
   const webUrl = 'https://bot-tele-topaz.vercel.app';
   const keyboard = new InlineKeyboard().url('🌸 Buka Website Keuangan', webUrl);
 
@@ -1802,6 +2030,7 @@ async function handleAktifkanAnggota(ctx: any, query: string = '') {
 
 // Command: /rekap & /recap
 bot.command(['rekap', 'recap'], async (ctx) => {
+  if (!(await checkFinancePermission(ctx))) return;
   const text = ctx.message?.text || '';
   const parts = text.split(' ').slice(1).join(' ').trim();
   await sendRekap(ctx, parts);
@@ -1809,6 +2038,7 @@ bot.command(['rekap', 'recap'], async (ctx) => {
 
 // Command: /rekapkas (Rekap total seluruh kas dan semua kegiatan)
 bot.command(['rekapkas', 'recapkas'], async (ctx) => {
+  if (!(await checkFinancePermission(ctx))) return;
   const text = ctx.message?.text || '';
   const parts = text.split(' ').slice(1).join(' ').trim();
   await sendRekapKas(ctx, parts);
@@ -2089,6 +2319,7 @@ bot.callbackQuery('cekfoto_test', async (ctx) => {
 
 // Command: /cekfoto
 bot.command(['cekfoto', 'foto', 'statusfoto', 'nota_foto'], async (ctx) => {
+  if (!(await checkFinancePermission(ctx))) return;
   const text = ctx.message?.text || '';
   const parts = text.split(' ').slice(1).join(' ').trim();
   await handleCekFoto(ctx, parts || undefined);
@@ -2096,6 +2327,7 @@ bot.command(['cekfoto', 'foto', 'statusfoto', 'nota_foto'], async (ctx) => {
 
 // Command: /unggahfoto (atau /unggahulang)
 bot.command(['unggahfoto', 'unggahulang', 'reupload', 'uploadfoto'], async (ctx) => {
+  if (!(await checkFinancePermission(ctx))) return;
   const text = ctx.message?.text || '';
   const parts = text.split(' ').slice(1).join(' ').trim();
   await handlePilihUnggahUlang(ctx, parts || undefined);
@@ -2103,34 +2335,40 @@ bot.command(['unggahfoto', 'unggahulang', 'reupload', 'uploadfoto'], async (ctx)
 
 // Command Kas Anggota
 bot.command('cekkas', async (ctx) => {
+  if (!(await checkFinancePermission(ctx))) return;
   const text = ctx.message?.text || '';
   const parts = text.split(' ').slice(1).join(' ').trim();
   await handleCekKas(ctx, parts);
 });
 
 bot.command('bayarkas', async (ctx) => {
+  if (!(await checkFinancePermission(ctx))) return;
   const text = ctx.message?.text || '';
   const parts = text.split(' ').slice(1).join(' ').trim();
   await handleBayarKas(ctx, parts);
 });
 
 bot.command('anggota', async (ctx) => {
+  if (!(await checkFinancePermission(ctx))) return;
   await handleDaftarAnggota(ctx);
 });
 
 bot.command('tambahanggota', async (ctx) => {
+  if (!(await checkFinancePermission(ctx))) return;
   const text = ctx.message?.text || '';
   const parts = text.split(' ').slice(1).join(' ').trim();
   await handleTambahAnggota(ctx, parts);
 });
 
 bot.command(['nonaktifanggota', 'nonaktifkananggota'], async (ctx) => {
+  if (!(await checkFinancePermission(ctx))) return;
   const text = ctx.message?.text || '';
   const parts = text.split(' ').slice(1).join(' ').trim();
   await handleNonaktifAnggota(ctx, parts);
 });
 
 bot.command('aktifkananggota', async (ctx) => {
+  if (!(await checkFinancePermission(ctx))) return;
   const text = ctx.message?.text || '';
   const parts = text.split(' ').slice(1).join(' ').trim();
   await handleAktifkanAnggota(ctx, parts);
@@ -2138,6 +2376,7 @@ bot.command('aktifkananggota', async (ctx) => {
 
 // Command: /pindahsaldo (dan alias)
 bot.command(['pindahsaldo', 'transfersaldo', 'pindah', 'transfer'], async (ctx) => {
+  if (!(await checkFinancePermission(ctx))) return;
   const text = ctx.message?.text || '';
   const parts = text.split(' ').slice(1).join(' ').trim();
   await handleStartPindahSaldo(ctx, parts);
@@ -2529,6 +2768,7 @@ bot.callbackQuery(/^inv_add:(.+)$/, async (ctx) => {
 // Command: /nota — mulai percakapan buat nota
 // ============================================================
 bot.command('nota', async (ctx) => {
+  if (!(await checkFinancePermission(ctx))) return;
   const chatId = ctx.chat.id;
   createBookStates.delete(chatId);
   transferStates.delete(chatId);
@@ -2714,6 +2954,7 @@ bot.on('message:text', async (ctx) => {
       /^(upload|unggah|drive|gas|reupload|foto|link|\/upload|\/unggah|\/unggahfoto|\/reupload)/i.test(text);
 
     if (isUploadCommand) {
+      if (!(await checkFinancePermission(ctx))) return;
       const repMsg = ctx.message.reply_to_message;
       let replyFileId: string | undefined;
       let replyFileName = `nota_${Date.now()}.jpg`;
@@ -2935,30 +3176,70 @@ bot.on('message:text', async (ctx) => {
   // === 4. Deteksi Perintah Cepat Kas Anggota & Pindah Saldo Berbasis Teks Bebas ===
   const textLower = text.toLowerCase();
 
+  // Trigger inventaris via teks bebas
+  if (
+    textLower.startsWith('tambah barang') ||
+    textLower.startsWith('tambahbarang') ||
+    textLower.startsWith('tambah inventaris') ||
+    textLower.startsWith('tambahinventaris') ||
+    /^(unit:|nama:|barang:)/i.test(text.trim())
+  ) {
+    const q = text.replace(/^(tambah\s*barang|tambahbarang|tambah\s*inventaris|tambahinventaris)/i, '').trim();
+    await handleTambahBarang(ctx, q || text);
+    return;
+  }
+
+  if (
+    textLower.startsWith('inventaris') ||
+    textLower.startsWith('daftar barang') ||
+    textLower.startsWith('cek barang') ||
+    textLower.startsWith('cari barang')
+  ) {
+    const q = text.replace(/^(inventaris|daftar\s*barang|cek\s*barang|cari\s*barang)/i, '').trim();
+    await handleInventaris(ctx, q || undefined);
+    return;
+  }
+
+  if (textLower === 'link inventaris' || textLower === 'linkinventaris' || textLower === 'web inventaris') {
+    const keyboard = new InlineKeyboard().url('📦 Buka Tabel Web Inventaris', WEB_INVENTARIS_URL);
+    await ctx.reply(
+      `📦 *Website Tabel Inventaris Barang*\n\n` +
+        `Buka tabel data inventaris seluruh unit (DKC, Unit CYJI, Unit Paspanca, Unit Ubaloka, dan Unit UNPASA):\n\n` +
+        `👉 [${WEB_INVENTARIS_URL}](${WEB_INVENTARIS_URL})\n\n` +
+        `💡 _Tampilan dalam bentuk tabel Word (putih & biru), memuat foto barang, kode otomatis (D0001, C0001, U0001, P0001, PS0001), jumlah, tahun, sumber, dan kondisi barang._`,
+      { parse_mode: 'Markdown', reply_markup: keyboard }
+    );
+    return;
+  }
+
   if (
     textLower.startsWith('pindah saldo') ||
     textLower.startsWith('pindahsaldo') ||
     textLower.startsWith('transfer saldo') ||
     textLower.startsWith('transfersaldo')
   ) {
+    if (!(await checkFinancePermission(ctx))) return;
     const q = text.replace(/^(pindah\s*saldo|pindahsaldo|transfer\s*saldo|transfersaldo)/i, '').trim();
     await handleStartPindahSaldo(ctx, q);
     return;
   }
 
   if (textLower.startsWith('cek kas') || textLower.startsWith('cekkas')) {
+    if (!(await checkFinancePermission(ctx))) return;
     const q = text.replace(/^(cek\s*kas|cekkas)/i, '').trim();
     await handleCekKas(ctx, q);
     return;
   }
 
   if (textLower.startsWith('bayar kas') || textLower.startsWith('bayarkas')) {
+    if (!(await checkFinancePermission(ctx))) return;
     const q = text.replace(/^(bayar\s*kas|bayarkas)/i, '').trim();
     await handleBayarKas(ctx, q);
     return;
   }
 
   if (textLower.startsWith('tambah anggota') || textLower.startsWith('tambahanggota')) {
+    if (!(await checkFinancePermission(ctx))) return;
     const q = text.replace(/^(tambah\s*anggota|tambahanggota)/i, '').trim();
     await handleTambahAnggota(ctx, q);
     return;
@@ -2970,6 +3251,7 @@ bot.on('message:text', async (ctx) => {
     textLower.startsWith('nonaktifkan') ||
     textLower.startsWith('nonaktifanggota')
   ) {
+    if (!(await checkFinancePermission(ctx))) return;
     const q = text.replace(/^(nonaktifkan\s*anggota|nonaktif\s*anggota|nonaktifkan|nonaktifanggota)/i, '').trim();
     await handleNonaktifAnggota(ctx, q);
     return;
@@ -2980,6 +3262,7 @@ bot.on('message:text', async (ctx) => {
     textLower.startsWith('aktifkan') ||
     textLower.startsWith('aktifkananggota')
   ) {
+    if (!(await checkFinancePermission(ctx))) return;
     const q = text.replace(/^(aktifkan\s*anggota|aktifkan|aktifkananggota)/i, '').trim();
     await handleAktifkanAnggota(ctx, q);
     return;
@@ -2997,6 +3280,7 @@ bot.on('message:text', async (ctx) => {
     });
 
     if (matchedBook) {
+      if (!(await checkFinancePermission(ctx))) return;
       await setUserActiveBook(chatId, matchedBook);
       const isKas = matchedBook.toLowerCase() === DEFAULT_BOOK_NAME.toLowerCase();
       await ctx.reply(
@@ -3041,6 +3325,10 @@ bot.on('message:text', async (ctx) => {
       'undang',
       'izinkan',
       'approve',
+      'izinkaninv',
+      'approveinv',
+      'undanginv',
+      'inviteinv',
       'cabut',
       'revoke',
       'linkuang',
@@ -3070,6 +3358,7 @@ bot.on('message:text', async (ctx) => {
 
   // Trigger nota via teks bebas
   if (text.toLowerCase().startsWith('buat nota') || text.toLowerCase() === 'nota') {
+    if (!(await checkFinancePermission(ctx))) return;
     notaStates.set(chatId, { step: 'invoice_no', data: { items: [] } });
     await ctx.reply(
       `📋 *Buat Nota AJP*\n\nMasukkan *No. Invoice:*\n_(contoh: 011/AJP/JJ/2026)_`,
@@ -3080,6 +3369,7 @@ bot.on('message:text', async (ctx) => {
 
   // Jika pengguna mengetik 'rekapkas' tanpa slash
   if (text.toLowerCase().startsWith('rekapkas') || text.toLowerCase().startsWith('recapkas')) {
+    if (!(await checkFinancePermission(ctx))) return;
     const parts = text.split(' ').slice(1).join(' ').trim();
     await sendRekapKas(ctx, parts);
     return;
@@ -3087,6 +3377,7 @@ bot.on('message:text', async (ctx) => {
 
   // Jika pengguna mengetik 'rekap' tanpa slash
   if (text.toLowerCase().startsWith('rekap') || text.toLowerCase().startsWith('recap')) {
+    if (!(await checkFinancePermission(ctx))) return;
     const parts = text.split(' ').slice(1).join(' ').trim();
     await sendRekap(ctx, parts);
     return;
@@ -3094,6 +3385,21 @@ bot.on('message:text', async (ctx) => {
 
   // === 5. Pencatatan Transaksi Normal Berbasis Teks ===
   try {
+    const senderId = String(ctx.from?.id);
+    if (senderId && !(await isUserAllowedFinance(senderId))) {
+      await ctx.reply(
+        `📦 *Akun Khusus Inventaris*\n\n` +
+          `Akun Anda disetel khusus untuk pengelolaan *Inventaris Logistik Barang*.\n` +
+          `Anda tidak memiliki akses pencatatan transaksi kas/keuangan.\n\n` +
+          `• Ketik /tambahbarang untuk input barang baru\n` +
+          `• Ketik /inventaris untuk melihat atau mencari data barang\n` +
+          `• Ketik /linkinventaris untuk tautan tabel web inventaris\n\n` +
+          `_Hubungi Admin jika Anda memerlukan akses ke pembukuan keuangan._`,
+        { parse_mode: 'Markdown' }
+      );
+      return;
+    }
+
     await ctx.replyWithChatAction('typing');
 
     const activeBook = await getUserActiveBook(chatId);
@@ -3111,7 +3417,6 @@ bot.on('message:text', async (ctx) => {
       return;
     }
 
-    const senderId = String(ctx.from?.id);
     const senderName = ctx.from?.first_name || 'Pengguna';
     const username = ctx.from?.username ? `@${ctx.from.username}` : '';
     const adminId = getAdminTelegramId();
@@ -3220,6 +3525,28 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
       /^(unit:|nama:|barang:)/i.test(rawCaption.trim())
     ) {
       await handleTambahBarangWithPhoto(ctx, fileId, rawCaption, mimeType);
+      return;
+    }
+
+    // === Cek hak akses keuangan untuk unggah foto nota ===
+    const senderId = String(ctx.from?.id);
+    if (senderId && !(await isUserAllowedFinance(senderId))) {
+      await ctx.reply(
+        `📦 *Akun Khusus Inventaris*\n\n` +
+          `Anda tidak memiliki akses pencatatan keuangan atau unggah foto nota belanja.\n\n` +
+          `Jika Anda ingin mengunggah foto *Barang Inventaris*, sertakan rincian barang pada keterangan foto:\n\n` +
+          `Contoh Keterangan:\n` +
+          `\`\`\`\n` +
+          `Nama: Tenda Regu Dome\n` +
+          `Unit: DKC\n` +
+          `Jumlah: 2 Unit\n` +
+          `Tahun: 2026\n` +
+          `Sumber: Pengadaan Kwarcab\n` +
+          `Kondisi: Baik\n` +
+          `\`\`\`\n` +
+          `Atau ketik /tambahbarang untuk melihat panduan lengkap.`,
+        { parse_mode: 'Markdown' }
+      );
       return;
     }
 
@@ -3417,7 +3744,6 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
       return;
     }
 
-    const senderId = String(ctx.from?.id);
     const senderName = ctx.from?.first_name || 'Pengguna';
     const username = ctx.from?.username ? `@${ctx.from.username}` : '';
     const adminId = getAdminTelegramId();
