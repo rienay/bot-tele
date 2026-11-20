@@ -199,46 +199,22 @@ export default function FinanceDashboardPage() {
             </div>
           </a>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+          <div className="nav-actions-group">
             <Link
               href="/"
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '0.35rem',
-                padding: '0.45rem 0.85rem',
-                borderRadius: '8px',
-                background: '#F43F5E',
-                color: '#ffffff',
-                textDecoration: 'none',
-                fontSize: '0.825rem',
-                fontWeight: 700,
-              }}
+              className="nav-btn-link active-pink"
             >
               <span>💰</span>
-              <span>Keuangan</span>
+              <span className="nav-label">Keuangan</span>
             </Link>
 
             <Link
               href="/inventaris"
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '0.35rem',
-                padding: '0.45rem 0.85rem',
-                borderRadius: '8px',
-                background: '#ffffff',
-                color: '#185abd',
-                border: '1px solid #185abd',
-                textDecoration: 'none',
-                fontSize: '0.825rem',
-                fontWeight: 700,
-                boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
-              }}
+              className="nav-btn-link outline-blue"
               title="Buka Website Inventaris Barang"
             >
               <span>📦</span>
-              <span>Inventaris Barang</span>
+              <span className="nav-label">Inventaris</span>
             </Link>
 
             <a
@@ -249,7 +225,7 @@ export default function FinanceDashboardPage() {
               title="Catat pengeluaran lewat Telegram"
             >
               <span>🤖</span>
-              <span>@duit_pwd_bot</span>
+              <span className="bot-name">@duit_pwd_bot</span>
             </a>
           </div>
         </div>
