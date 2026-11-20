@@ -13,6 +13,7 @@ export interface InventarisItem {
   sumber: string;
   kondisi: string;
   foto: string;
+  displayFoto?: string;
   keterangan: string;
   waktuInput: string;
 }
@@ -33,6 +34,50 @@ const DAFTAR_UNIT: UnitConfig[] = [
   { id: 'Ubaloka', name: 'Ubaloka', prefix: 'U', fullName: 'Unit Bantu Pertolongan Pramuka', badgeBg: '#ccfbf1', badgeText: '#0f766e' },
   { id: 'UNPASA', name: 'UNPASA', prefix: 'P', fullName: 'Unit Protokol Satria', badgeBg: '#cffafe', badgeText: '#0891b2' },
 ];
+
+/**
+ * Konversi link Google Drive (view HTML page) menjadi direct image link (lh3.googleusercontent.com)
+ */
+function getDirectImageUrl(rawUrl?: string): string {
+  if (!rawUrl || typeof rawUrl !== 'string') return '';
+  const trimmed = rawUrl.trim();
+  if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) return '';
+
+  const fileDMatch = trimmed.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+  if (fileDMatch && fileDMatch[1]) {
+    return `https://lh3.googleusercontent.com/d/${fileDMatch[1]}`;
+  }
+
+  const idMatch = trimmed.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+  if (idMatch && idMatch[1]) {
+    return `https://lh3.googleusercontent.com/d/${idMatch[1]}`;
+  }
+
+  return trimmed;
+}
+
+function getDriveThumbnailFallback(rawUrl?: string): string {
+  if (!rawUrl) return '';
+  const fileDMatch = rawUrl.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+  if (fileDMatch && fileDMatch[1]) {
+    return `https://drive.google.com/thumbnail?id=${fileDMatch[1]}&sz=w800`;
+  }
+  const idMatch = rawUrl.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+  if (idMatch && idMatch[1]) {
+    return `https://drive.google.com/thumbnail?id=${idMatch[1]}&sz=w800`;
+  }
+  return '';
+}
+
+const handleImageError = (e: React.SyntheticEvent<HTMLImageElement, Event>, originalUrl: string) => {
+  const target = e.currentTarget;
+  const fallback = getDriveThumbnailFallback(originalUrl);
+  if (fallback && target.src !== fallback) {
+    target.src = fallback;
+  } else {
+    target.style.display = 'none';
+  }
+};
 
 export default function InventarisPage() {
   const [items, setItems] = useState<InventarisItem[]>([]);
@@ -585,12 +630,11 @@ export default function InventarisPage() {
                           title="Ketuk untuk perbesar foto"
                         >
                           <img
-                            src={it.foto}
+                            src={it.displayFoto || getDirectImageUrl(it.foto)}
                             alt={it.namaBarang}
                             className="card-photo-img"
-                            onError={(e) => {
-                              (e.target as HTMLElement).style.display = 'none';
-                            }}
+                            onError={(e) => handleImageError(e, it.foto)}
+                            loading="lazy"
                           />
                           <span className="card-photo-hint">🔍 Perbesar</span>
                         </button>
@@ -715,12 +759,11 @@ export default function InventarisPage() {
                                 title="Klik untuk melihat foto barang"
                               >
                                 <img
-                                  src={it.foto}
+                                  src={it.displayFoto || getDirectImageUrl(it.foto)}
                                   alt={it.namaBarang}
                                   className="word-photo-thumb"
-                                  onError={(e) => {
-                                    (e.target as HTMLElement).style.display = 'none';
-                                  }}
+                                  onError={(e) => handleImageError(e, it.foto)}
+                                  loading="lazy"
                                 />
                                 <span className="photo-icon-fallback">📸</span>
                               </button>
@@ -805,7 +848,12 @@ export default function InventarisPage() {
               </button>
             </div>
             <div className="word-modal-body">
-              <img src={previewPhoto.url} alt={previewPhoto.title} className="word-modal-img" />
+              <img
+                src={getDirectImageUrl(previewPhoto.url)}
+                alt={previewPhoto.title}
+                className="word-modal-img"
+                onError={(e) => handleImageError(e, previewPhoto.url)}
+              />
             </div>
             <div className="word-modal-footer">
               <a
@@ -1489,11 +1537,14 @@ export default function InventarisPage() {
           height: 80px;
           border-radius: 6px;
           overflow: hidden;
-          background-color: #0f172a;
+          background-color: #f1f5f9;
           border: 1px solid #cbd5e1;
           flex-shrink: 0;
           padding: 0;
           cursor: pointer;
+          display: flex;
+          align-items: center;
+          justify-content: center;
         }
         .card-photo-img {
           width: 100%;
@@ -1726,7 +1777,7 @@ export default function InventarisPage() {
 
         /* Thumbnail */
         .word-photo-thumb-btn {
-          background: none;
+          background-color: #f8fafc;
           border: 1px solid #cbd5e1;
           border-radius: 6px;
           padding: 2px;
@@ -1740,13 +1791,18 @@ export default function InventarisPage() {
           height: 42px;
         }
         .word-photo-thumb {
+          position: absolute;
+          top: 0;
+          left: 0;
           width: 100%;
           height: 100%;
           object-fit: cover;
           border-radius: 4px;
+          z-index: 2;
         }
         .photo-icon-fallback {
           font-size: 1rem;
+          z-index: 1;
         }
         .word-no-photo {
           color: #cbd5e1;

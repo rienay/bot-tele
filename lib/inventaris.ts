@@ -82,8 +82,38 @@ export interface InventarisItem {
   sumber: string;
   kondisi: KondisiBarang | string;
   foto: string;
+  displayFoto?: string;
   keterangan: string;
   waktuInput: string;
+}
+
+/**
+ * Mengubah URL view Google Drive menjadi direct image link (lh3.googleusercontent.com/d/ID)
+ * yang bisa langsung dirender pada tag <img> di web/browser tanpa terblokir proteksi HTML Google Drive.
+ */
+export function formatDriveImageUrl(rawUrl?: string): string {
+  if (!rawUrl || typeof rawUrl !== 'string') return '';
+  const trimmed = rawUrl.trim();
+  if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) return '';
+
+  // Format 1: drive.google.com/file/d/<FILE_ID>/view...
+  const fileDMatch = trimmed.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+  if (fileDMatch && fileDMatch[1]) {
+    return `https://lh3.googleusercontent.com/d/${fileDMatch[1]}`;
+  }
+
+  // Format 2: drive.google.com/open?id=<FILE_ID> atau uc?id=<FILE_ID>
+  const idMatch = trimmed.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+  if (idMatch && idMatch[1]) {
+    return `https://lh3.googleusercontent.com/d/${idMatch[1]}`;
+  }
+
+  // Format 3: sudah lh3 link
+  if (trimmed.includes('lh3.googleusercontent.com')) {
+    return trimmed;
+  }
+
+  return trimmed;
 }
 
 export interface InventarisStats {
@@ -246,6 +276,7 @@ export async function getAllInventaris(filterUnit?: string): Promise<InventarisI
         sumber: String(sumberRaw || '-').trim(),
         kondisi: String(kondisiRaw || 'Baik').trim(),
         foto: String(fotoRaw || '').trim(),
+        displayFoto: formatDriveImageUrl(String(fotoRaw || '').trim()),
         keterangan: String(ketRaw || '-').trim(),
         waktuInput: String(waktuRaw || '-').trim(),
       });
@@ -350,6 +381,7 @@ export async function tambahInventaris(data: {
     sumber: data.sumber,
     kondisi: data.kondisi,
     foto: data.foto || '',
+    displayFoto: formatDriveImageUrl(data.foto || ''),
     keterangan: data.keterangan || '-',
     waktuInput: nowJakarta,
   };
