@@ -215,6 +215,14 @@ export default function FinanceDashboardPage() {
               <span className="nav-label">Inventaris</span>
             </Link>
 
+            <Link
+              href="/surat"
+              className="nav-btn-link outline-blue"
+              title="Buka Website Persuratan DKC"
+            >
+              <span className="nav-label">Persuratan</span>
+            </Link>
+
             <a
               href="https://t.me/duit_pwd_bot"
               target="_blank"

@@ -410,6 +410,9 @@ export default function InventarisPage() {
             <Link href="/inventaris" className="word-nav-link active" title="Inventaris Barang">
               <span className="nav-text">Inventaris</span>
             </Link>
+            <Link href="/surat" className="word-nav-link" title="Persuratan DKC Cilacap">
+              <span className="nav-text">Persuratan</span>
+            </Link>
             <a
               href="https://t.me/duit_pwd_bot"
               target="_blank"

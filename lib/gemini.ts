@@ -214,3 +214,121 @@ Jika gambar sama sekali bukan bukti transfer, bukan struk/nota, dan tidak ada no
     throw error;
   }
 }
+
+export interface ParsedSurat {
+  isSurat: boolean;
+  jenis: 'Surat Masuk' | 'Surat Keluar';
+  nomorSurat: string;
+  tanggalSurat: string;
+  tanggalDiterima: string;
+  pengirim: string;
+  tujuan: string;
+  perihal: string;
+  kategori: string;
+  sifat: string;
+  ringkasan: string;
+}
+
+/**
+ * Ekstraksi rincian surat resmi (Surat Masuk & Surat Keluar) dari Foto, PDF, atau Dokumen Word (.docx)
+ */
+export async function parseDocumentSurat(
+  buffer: Buffer,
+  mimeType: string,
+  fileName?: string,
+  caption?: string,
+  referenceDate: Date = new Date()
+): Promise<ParsedSurat | null> {
+  const todayStr = getLocalTodayDateString(referenceDate);
+  const isDocx =
+    mimeType.includes('wordprocessingml') ||
+    mimeType.includes('msword') ||
+    fileName?.toLowerCase().endsWith('.docx');
+
+  let extractedDocxText = '';
+  if (isDocx) {
+    try {
+      const mammoth = require('mammoth');
+      const { value } = await mammoth.extractRawText({ buffer });
+      extractedDocxText = value || '';
+    } catch (docxErr) {
+      console.warn('Gagal membaca isi berkas docx dengan mammoth:', docxErr);
+    }
+  }
+
+  const prompt = `Kamu adalah asisten tata persuratan dan kearsipan resmi untuk Dewan Kerja Pramuka Penegak dan Pandega Kwartir Cabang Cilacap (DKC Cilacap).
+Tanggal referensi hari ini: ${todayStr} (WIB).
+Nama berkas: "${fileName || '-'}"
+Keterangan/caption dari pengguna: "${caption || '-'}"
+
+Tugas: Analisis berkas/dokumen/foto ini dan ekstrak seluruh data persuratan ke dalam JSON murni.
+
+Aturan Kritis:
+1. isSurat:
+   - true jika dokumen ini adalah surat resmi, undangan, permohonan, surat edaran, nota dinas, surat mandat/tugas, keputusan, sertifikat, atau dokumen administrasi.
+   - false jika ini struk belanja kasir atau foto biasa yang tidak berhubungan dengan persuratan/administrasi.
+2. jenis:
+   - "Surat Masuk": Jika ditujukan ke DKC Cilacap, Kwarcab Cilacap, atau Pramuka Cilacap (dari pihak luar/Kwarnas/Kwarda/Kwarran/Gudep/Dinas ke DKC).
+   - "Surat Keluar": Jika kop surat atau pengirimnya adalah DKC Cilacap (diterbitkan oleh DKC Cilacap untuk pihak lain).
+   - Jika pengguna menuliskan di caption "surat masuk" atau "surat keluar", patuhi instruksi pengguna.
+3. nomorSurat: Nomor surat resmi persis pada kop (contoh: "045/11.01-C/2026"). Jika tidak tertulis, isi "-".
+4. tanggalSurat: Tanggal penandatanganan surat (YYYY-MM-DD). Default: ${todayStr}.
+5. tanggalDiterima: Tanggal arsip/penerimaan (YYYY-MM-DD). Default: ${todayStr}.
+6. pengirim: Instansi/pihak pengirim. Jika Surat Keluar DKC, isi "DKC Cilacap".
+7. tujuan: Pihak/instansi yang dituju. Jika Surat Masuk ke DKC, isi "DKC Cilacap".
+8. perihal: Pokok/hal surat (contoh: "Undangan Rapat Kerja Cabang", "Permohonan Peminjaman Tenda").
+9. kategori: Pilih salah satu: "Undangan" | "Permohonan" | "Pemberitahuan" | "Mandat / Tugas" | "Keputusan" | "Rekomendasi" | "Edaran" | "Lain-lain".
+10. sifat: Pilih salah satu: "Biasa" | "Penting" | "Segera" | "Sangat Segera" | "Rahasia".
+11. ringkasan: 1-2 kalimat ringkasan isi surat, agenda kegiatan, waktu/tempat acara, atau tindak lanjut yang diperlukan.
+
+Kembalikan format JSON murni:
+{
+  "isSurat": boolean,
+  "jenis": "Surat Masuk" | "Surat Keluar",
+  "nomorSurat": string,
+  "tanggalSurat": "YYYY-MM-DD",
+  "tanggalDiterima": "YYYY-MM-DD",
+  "pengirim": string,
+  "tujuan": string,
+  "perihal": string,
+  "kategori": string,
+  "sifat": string,
+  "ringkasan": string
+}`;
+
+  try {
+    let contents: any;
+
+    if (isDocx && extractedDocxText) {
+      contents = `${prompt}\n\nIsi Teks Dokumen Word:\n${extractedDocxText.slice(0, 15000)}`;
+    } else {
+      // PDF atau Foto Dokumen
+      const targetMime = mimeType === 'application/pdf' ? 'application/pdf' : mimeType.startsWith('image/') ? mimeType : 'image/jpeg';
+      contents = [
+        prompt,
+        {
+          inlineData: {
+            data: buffer.toString('base64'),
+            mimeType: targetMime,
+          },
+        },
+      ];
+    }
+
+    const result = await generateWithFallback(contents);
+    const responseText = result.response.text().trim();
+    if (!responseText || responseText === 'null') {
+      return null;
+    }
+
+    const parsed = JSON.parse(responseText) as ParsedSurat;
+    if (!parsed || parsed.isSurat === false) {
+      return null;
+    }
+
+    return parsed;
+  } catch (error) {
+    console.error('Error saat parsing dokumen surat dengan Gemini:', error);
+    return null;
+  }
+}

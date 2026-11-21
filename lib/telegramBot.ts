@@ -1,7 +1,7 @@
 import { Bot, InputFile, InlineKeyboard } from 'grammy';
 import dns from 'dns';
 import { google } from 'googleapis';
-import { parseTextMessage, parseReceiptImage } from './gemini';
+import { parseTextMessage, parseReceiptImage, parseDocumentSurat, ParsedSurat } from './gemini';
 import {
   appendTransaction,
   getMonthSummary,
@@ -41,6 +41,14 @@ import {
   DAFTAR_UNIT,
   InventarisItem,
 } from './inventaris';
+import {
+  getAllSurat,
+  getSuratStats,
+  tambahSurat,
+  SuratItem,
+  JenisSurat,
+  SHEET_SURAT,
+} from './surat';
 import { uploadReceiptToDrive, getDriveConfigStatus, testDriveUpload } from './googleDrive';
 import { formatPrivateKey, getGoogleAuth } from './googleAuth';
 import { generateNotaPdf, HARGA_PER_KG, rupiahFormat } from './generateNota';
@@ -160,6 +168,8 @@ async function syncBotCommands(api: any) {
       { command: 'invite', description: 'Cara undang anggota baru' },
       { command: 'linkuang', description: 'Link website keuangan transparan' },
       { command: 'linkinventaris', description: 'Link tabel web inventaris barang' },
+      { command: 'surat', description: 'Agenda surat masuk & keluar DKC' },
+      { command: 'linksurat', description: 'Link tabel web persuratan DKC' },
     ];
 
     // Tambahkan command untuk buku kegiatan yang valid (hanya huruf, angka, underscore)
@@ -392,6 +402,12 @@ bot.command(['start', 'help'], async (ctx) => {
       `• /inventaris — *Inventaris Logistik* (DKC, CYJI, Paspanca, Ubaloka, UNPASA)\n` +
       `• /tambahbarang — *Tambah Barang Baru* (kode otomatis D0001, C0001, dst)\n` +
       `• /linkinventaris — *Tabel Web Inventaris* (tampilan tabel Word putih-biru)\n\n` +
+      `📑 *Menu Persuratan DKC Cilacap:*\n` +
+      `• /surat — *Arsip Persuratan* (Surat Masuk & Surat Keluar)\n` +
+      `• /suratmasuk — *Daftar Surat Masuk* terbaru\n` +
+      `• /suratkeluar — *Daftar Surat Keluar* terbaru\n` +
+      `• /linksurat — *Tabel Web Persuratan* (agenda surat resmi DKC)\n` +
+      `• _Kirim foto dokumen, berkas PDF, atau Word (.docx) untuk auto-catat AI!_\n\n` +
       `🌸 *Website Dashboard Keuangan:*\n` +
       `• /linkuang — *Buka Link Web Keuangan* (tampilan pastel & transparan)\n\n` +
       adminMenuText +
@@ -2763,6 +2779,262 @@ bot.callbackQuery(/^inv_add:(.+)$/, async (ctx) => {
   await handleTambahBarang(ctx, `Unit: ${targetUnit}`);
 });
 
+// ============================================================
+// MODUL PERSURATAN RESMI DKC CILACAP (Surat Masuk & Surat Keluar)
+// ============================================================
+
+const WEB_SURAT_URL = 'https://bot-tele-topaz.vercel.app/surat';
+
+/**
+ * Menampilkan ringkasan agenda persuratan DKC Cilacap
+ */
+async function handleMenuSurat(ctx: any) {
+  await ctx.replyWithChatAction('typing');
+
+  try {
+    const stats = await getSuratStats();
+    const keyboard = new InlineKeyboard()
+      .text(`📥 Surat Masuk (${stats.totalMasuk})`, 'surat_masuk')
+      .text(`📤 Surat Keluar (${stats.totalKeluar})`, 'surat_keluar')
+      .row()
+      .url('🌐 Buka Tabel Web Persuratan', WEB_SURAT_URL);
+
+    await ctx.reply(
+      `📑 *Buku Agenda Persuratan Resmi — DKC Cilacap*\n\n` +
+        `Kwartir Cabang Gerakan Pramuka Cilacap\n\n` +
+        `📊 *Ringkasan Arsip Persuratan:*\n` +
+        `• *Total Arsip:* ${stats.totalSurat} Berkas\n` +
+        `• *Surat Masuk:* ${stats.totalMasuk} Surat (Bulan ini: ${stats.bulanIniMasuk})\n` +
+        `• *Surat Keluar:* ${stats.totalKeluar} Surat (Bulan ini: ${stats.bulanIniKeluar})\n` +
+        `• *Sifat Penting / Segera:* ${stats.totalPenting} Surat\n\n` +
+        `💡 *Cara Cepat Catat / Arsipkan Surat:*\n` +
+        `Cukup kirimkan *Foto Dokumen*, berkas *PDF*, atau berkas *Word (.docx)* surat ke chat bot ini.\n` +
+        `AI akan otomatis membaca Nomor Surat, Perihal, Pengirim, dan mengunggahnya ke Google Drive! ✨`,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: keyboard,
+      }
+    );
+  } catch (err: any) {
+    console.error('Gagal memuat persuratan:', err);
+    await ctx.reply(`❌ Gagal memuat data persuratan: ${err?.message || err}`);
+  }
+}
+
+/**
+ * Menampilkan daftar 5 surat terbaru berdasarkan jenis
+ */
+async function handleListSurat(ctx: any, jenisFilter?: JenisSurat) {
+  await ctx.replyWithChatAction('typing');
+
+  try {
+    const all = await getAllSurat();
+    const filtered = jenisFilter ? all.filter((it) => it.jenis === jenisFilter) : all;
+    const latest = filtered.slice(0, 5);
+
+    const title = jenisFilter ? `Daftar ${jenisFilter} DKC Cilacap` : 'Daftar Persuratan DKC Cilacap';
+
+    if (latest.length === 0) {
+      const keyboard = new InlineKeyboard().url('🌐 Buka Tabel Web', WEB_SURAT_URL);
+      await ctx.reply(
+        `ℹ️ Belum ada data ${jenisFilter || 'surat'} yang tercatat di Google Sheets.\n\n` +
+          `Kirimkan berkas PDF/Word atau foto surat ke bot untuk mulai mencatat.`,
+        { reply_markup: keyboard }
+      );
+      return;
+    }
+
+    let text = `📑 *${title}* (5 Terkini)\n\n`;
+
+    latest.forEach((it, idx) => {
+      const isMasuk = it.jenis === 'Surat Masuk';
+      text +=
+        `*${idx + 1}. [${it.kodeArsip}]* ${isMasuk ? '📥' : '📤'} *${it.nomorSurat}*\n` +
+        `• *Perihal:* ${it.perihal}\n` +
+        `• *${isMasuk ? 'Dari' : 'Kepada'}:* ${isMasuk ? it.pengirim : it.tujuan}\n` +
+        `• *Tanggal:* ${it.tanggalSurat} | *Sifat:* ${it.sifat}\n` +
+        (it.berkas ? `• 🔗 [Lihat Dokumen di Drive](${it.berkas})\n` : '') +
+        `\n`;
+    });
+
+    const keyboard = new InlineKeyboard()
+      .text('📥 Surat Masuk', 'surat_masuk')
+      .text('📤 Surat Keluar', 'surat_keluar')
+      .row()
+      .text('🔙 Menu Persuratan', 'surat_main')
+      .url('🌐 Buka Tabel Web', WEB_SURAT_URL);
+
+    await ctx.reply(text, {
+      parse_mode: 'Markdown',
+      reply_markup: keyboard,
+      link_preview_options: { is_disabled: true },
+    });
+  } catch (err: any) {
+    console.error('Error listing surat:', err);
+    await ctx.reply(`❌ Gagal mengambil daftar surat: ${err?.message || err}`);
+  }
+}
+
+/**
+ * Menangani dokumen surat (Foto, PDF, Word .docx) yang diunggah ke Telegram
+ */
+async function handleSuratDocument(
+  ctx: any,
+  fileId: string,
+  fileName: string,
+  mimeType: string,
+  caption?: string
+) {
+  const senderName = ctx.from?.first_name || 'Pengguna';
+  const username = ctx.from?.username ? `@${ctx.from.username}` : '';
+  const pic = username ? `${senderName} (${username})` : senderName;
+
+  await ctx.reply(
+    `📑 *Menganalisis dokumen surat dengan AI & mengunggah ke Google Drive...*\n` +
+      `_Mohon tunggu beberapa saat..._`,
+    { parse_mode: 'Markdown' }
+  );
+  await ctx.replyWithChatAction('upload_document');
+
+  try {
+    const file = await ctx.api.getFile(fileId);
+    if (!file.file_path) {
+      throw new Error('Tidak dapat mengunduh berkas dari server Telegram.');
+    }
+
+    const fileUrl = `https://api.telegram.org/file/bot${process.env.TELEGRAM_BOT_TOKEN}/${file.file_path}`;
+    const response = await fetch(fileUrl);
+    if (!response.ok) {
+      throw new Error(`Gagal fetch file dari Telegram: ${response.statusText}`);
+    }
+
+    const arrayBuffer = await response.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+
+    const ext = fileName.split('.').pop() || 'pdf';
+    const driveFileName = `surat_dkc_${Date.now()}.${ext}`;
+
+    // Upload ke Drive dan Ekstraksi AI secara simultan
+    const [driveLink, parsedSurat] = await Promise.all([
+      uploadReceiptToDrive(buffer, driveFileName, mimeType).catch((err) => {
+        console.error('Error upload berkas surat ke Drive:', err);
+        return null;
+      }),
+      parseDocumentSurat(buffer, mimeType, fileName, caption).catch((err) => {
+        console.error('Error AI parse surat:', err);
+        return null;
+      }),
+    ]);
+
+    // Tentukan jenis surat
+    let jenis: JenisSurat = 'Surat Masuk';
+    const capLower = (caption || '').toLowerCase();
+    if (capLower.includes('keluar') || capLower.includes('sk')) {
+      jenis = 'Surat Keluar';
+    } else if (parsedSurat?.jenis) {
+      jenis = parsedSurat.jenis;
+    }
+
+    const nomorSurat = parsedSurat?.nomorSurat && parsedSurat.nomorSurat !== '-' ? parsedSurat.nomorSurat : '-';
+    const perihal =
+      parsedSurat?.perihal ||
+      caption?.replace(/^(\/surat|\/arsip|surat\s*masuk|surat\s*keluar)/i, '').trim() ||
+      'Berkas Dokumen Resmi DKC';
+    const pengirim = parsedSurat?.pengirim || (jenis === 'Surat Keluar' ? 'DKC Cilacap' : '-');
+    const tujuan = parsedSurat?.tujuan || (jenis === 'Surat Masuk' ? 'DKC Cilacap' : '-');
+    const tanggalSurat = parsedSurat?.tanggalSurat || new Date().toISOString().slice(0, 10);
+    const tanggalDiterima = parsedSurat?.tanggalDiterima || new Date().toISOString().slice(0, 10);
+    const kategori = parsedSurat?.kategori || 'Lain-lain';
+    const sifat = parsedSurat?.sifat || 'Biasa';
+    const ringkasan = parsedSurat?.ringkasan || '-';
+
+    const newItem = await tambahSurat({
+      jenis,
+      nomorSurat,
+      tanggalSurat,
+      tanggalDiterima,
+      pengirim,
+      tujuan,
+      perihal,
+      kategori,
+      sifat,
+      ringkasan,
+      berkas: driveLink || '',
+      pic,
+    });
+
+    const keyboard = new InlineKeyboard();
+    if (driveLink) {
+      keyboard.url('📄 Buka Berkas di Drive', driveLink);
+    }
+    keyboard.url('🌐 Buka Tabel Web Persuratan', WEB_SURAT_URL);
+
+    await ctx.reply(
+      `✅ *Dokumen Berhasil Dicatat ke Arsip Persuratan DKC!*\n\n` +
+        `🏷️ *Kode Arsip:* \`${newItem.kodeArsip}\`\n` +
+        `📂 *Jenis Surat:* *${newItem.jenis}*\n` +
+        `🔢 *No. Surat:* \`${newItem.nomorSurat}\`\n` +
+        `📅 *Tanggal:* ${newItem.tanggalSurat}\n` +
+        `🏢 *Pengirim:* ${newItem.pengirim}\n` +
+        `🎯 *Tujuan:* ${newItem.tujuan}\n` +
+        `📋 *Perihal:* *${newItem.perihal}*\n` +
+        `🏷️ *Kategori & Sifat:* ${newItem.kategori} (${newItem.sifat})\n` +
+        (newItem.ringkasan && newItem.ringkasan !== '-' ? `📝 *Ringkasan:* _${newItem.ringkasan}_\n` : '') +
+        `\n👤 *PIC Input:* ${pic}\n` +
+        (driveLink ? `🔗 [Buka Berkas di Google Drive](${driveLink})\n\n` : '\n') +
+        `_Data tersimpan di tab Google Sheets **${SHEET_SURAT}** dan tabel web persuratan._`,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: keyboard,
+        link_preview_options: { is_disabled: true },
+      }
+    );
+  } catch (err: any) {
+    console.error('Error handling surat document:', err);
+    await ctx.reply(`❌ Terjadi kendala saat memproses berkas surat: ${err?.message || err}`);
+  }
+}
+
+// Commands: Persuratan DKC
+bot.command(['surat', 'persuratan', 'arsip'], async (ctx) => {
+  await handleMenuSurat(ctx);
+});
+
+bot.command(['suratmasuk', 'masuk'], async (ctx) => {
+  await handleListSurat(ctx, 'Surat Masuk');
+});
+
+bot.command(['suratkeluar', 'keluar'], async (ctx) => {
+  await handleListSurat(ctx, 'Surat Keluar');
+});
+
+bot.command(['linksurat', 'websurat'], async (ctx) => {
+  const keyboard = new InlineKeyboard().url('📑 Buka Tabel Web Persuratan', WEB_SURAT_URL);
+  await ctx.reply(
+    `📑 *Website Arsip Persuratan DKC Cilacap*\n\n` +
+      `Buka buku agenda surat masuk & keluar resmi DKC Cilacap:\n\n` +
+      `👉 [${WEB_SURAT_URL}](${WEB_SURAT_URL})\n\n` +
+      `💡 _Tampilan tabel bersih bertema Word (putih & biru), memuat berkas surat asli di Google Drive, kode arsip otomatis (SM-0001, SK-0001), tanggal, perihal, dan ringkasan isi surat._`,
+    { parse_mode: 'Markdown', reply_markup: keyboard }
+  );
+});
+
+// Callbacks Persuratan
+bot.callbackQuery('surat_main', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await handleMenuSurat(ctx);
+});
+
+bot.callbackQuery('surat_masuk', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await handleListSurat(ctx, 'Surat Masuk');
+});
+
+bot.callbackQuery('surat_keluar', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await handleListSurat(ctx, 'Surat Keluar');
+});
+
 
 // ============================================================
 // Command: /nota — mulai percakapan buat nota
@@ -3212,6 +3484,39 @@ bot.on('message:text', async (ctx) => {
     return;
   }
 
+  // Trigger persuratan via teks bebas
+  if (textLower.startsWith('surat masuk') || textLower.startsWith('suratmasuk')) {
+    await handleListSurat(ctx, 'Surat Masuk');
+    return;
+  }
+
+  if (textLower.startsWith('surat keluar') || textLower.startsWith('suratkeluar')) {
+    await handleListSurat(ctx, 'Surat Keluar');
+    return;
+  }
+
+  if (
+    textLower === 'surat' ||
+    textLower === 'persuratan' ||
+    textLower === 'arsip' ||
+    textLower === 'agenda surat' ||
+    textLower === 'arsip surat'
+  ) {
+    await handleMenuSurat(ctx);
+    return;
+  }
+
+  if (textLower === 'link surat' || textLower === 'linksurat' || textLower === 'web surat' || textLower === 'websurat') {
+    const keyboard = new InlineKeyboard().url('📑 Buka Tabel Web Persuratan', WEB_SURAT_URL);
+    await ctx.reply(
+      `📑 *Website Arsip Persuratan DKC Cilacap*\n\n` +
+        `Buka buku agenda surat masuk & keluar resmi DKC Cilacap:\n\n` +
+        `👉 [${WEB_SURAT_URL}](${WEB_SURAT_URL})`,
+      { parse_mode: 'Markdown', reply_markup: keyboard }
+    );
+    return;
+  }
+
   if (
     textLower.startsWith('pindah saldo') ||
     textLower.startsWith('pindahsaldo') ||
@@ -3343,6 +3648,15 @@ bot.on('message:text', async (ctx) => {
       'linkbarang',
       'cekfoto',
       'unggahfoto',
+      'surat',
+      'persuratan',
+      'arsip',
+      'suratmasuk',
+      'suratkeluar',
+      'masuk',
+      'keluar',
+      'linksurat',
+      'websurat',
     ];
 
     if (!standardCmds.includes(rawCmd)) {
@@ -3504,20 +3818,40 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
       fileId = largestPhoto.file_id;
     } else if (ctx.message.document) {
       const doc = ctx.message.document;
-      if (doc.mime_type?.startsWith('image/')) {
-        fileId = doc.file_id;
-        fileName = doc.file_name || fileName;
-        mimeType = doc.mime_type;
-      }
+      fileId = doc.file_id;
+      fileName = doc.file_name || `dokumen_${Date.now()}`;
+      mimeType = doc.mime_type || 'application/octet-stream';
     }
 
     if (!fileId) {
-      await ctx.reply('⚠️ Mohon kirimkan file berupa gambar foto nota/struk belanja.');
+      await ctx.reply('⚠️ Mohon kirimkan berkas berupa foto nota, dokumen surat, atau file PDF/Word.');
+      return;
+    }
+
+    const rawCaption = ctx.message.caption || '';
+
+    // === Cek jika ini adalah berkas persuratan DKC (Surat Masuk / Surat Keluar) ===
+    const isDocxOrPdf =
+      mimeType === 'application/pdf' ||
+      mimeType.includes('wordprocessingml') ||
+      mimeType.includes('msword') ||
+      fileName.toLowerCase().endsWith('.docx') ||
+      fileName.toLowerCase().endsWith('.pdf') ||
+      fileName.toLowerCase().endsWith('.doc');
+
+    const isSuratCaption =
+      /^(surat|arsip|\/surat|\/arsip|surat\s*masuk|surat\s*keluar|sm|sk)/i.test(rawCaption.trim()) ||
+      rawCaption.toLowerCase().includes('surat masuk') ||
+      rawCaption.toLowerCase().includes('surat keluar') ||
+      rawCaption.toLowerCase().includes('nomor surat') ||
+      rawCaption.toLowerCase().includes('no. surat');
+
+    if (isSuratCaption || (isDocxOrPdf && !rawCaption.toLowerCase().includes('nota'))) {
+      await handleSuratDocument(ctx, fileId, fileName, mimeType, rawCaption);
       return;
     }
 
     // === Cek jika ini adalah foto untuk Inventaris Barang ===
-    const rawCaption = ctx.message.caption || '';
     if (
       rawCaption.startsWith('/tambahbarang') ||
       rawCaption.startsWith('/tambahinventaris') ||
@@ -3723,6 +4057,52 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
     ]);
 
     if (!parsed) {
+      // Cek apakah berkas/foto ini adalah dokumen persuratan resmi DKC
+      const parsedSurat = await parseDocumentSurat(buffer, mimeType, fileName, rawCaption).catch(() => null);
+      if (parsedSurat && parsedSurat.isSurat) {
+        const jenis = parsedSurat.jenis || 'Surat Masuk';
+        const senderName = ctx.from?.first_name || 'Pengguna';
+        const username = ctx.from?.username ? `@${ctx.from.username}` : '';
+        const pic = username ? `${senderName} (${username})` : senderName;
+
+        const newSurat = await tambahSurat({
+          jenis,
+          nomorSurat: parsedSurat.nomorSurat || '-',
+          tanggalSurat: parsedSurat.tanggalSurat,
+          tanggalDiterima: parsedSurat.tanggalDiterima,
+          pengirim: parsedSurat.pengirim,
+          tujuan: parsedSurat.tujuan,
+          perihal: parsedSurat.perihal,
+          kategori: parsedSurat.kategori,
+          sifat: parsedSurat.sifat,
+          ringkasan: parsedSurat.ringkasan,
+          berkas: driveLink || '',
+          pic,
+        });
+
+        const keyboard = new InlineKeyboard();
+        if (driveLink) keyboard.url('📄 Buka Berkas di Drive', driveLink);
+        keyboard.url('🌐 Buka Tabel Web Persuratan', WEB_SURAT_URL);
+
+        await ctx.reply(
+          `📑 *Terdeteksi Dokumen Surat Resmi!*\n\n` +
+            `AI mendeteksi berkas ini sebagai dokumen persuratan dan otomatis mencatatnya ke arsip DKC:\n\n` +
+            `🏷️ *Kode Arsip:* \`${newSurat.kodeArsip}\`\n` +
+            `📂 *Jenis Surat:* *${newSurat.jenis}*\n` +
+            `🔢 *No. Surat:* \`${newSurat.nomorSurat}\`\n` +
+            `📅 *Tanggal:* ${newSurat.tanggalSurat}\n` +
+            `🏢 *Pengirim:* ${newSurat.pengirim}\n` +
+            `🎯 *Tujuan:* ${newSurat.tujuan}\n` +
+            `📋 *Perihal:* *${newSurat.perihal}*\n` +
+            `🏷️ *Kategori & Sifat:* ${newSurat.kategori} (${newSurat.sifat})\n` +
+            (newSurat.ringkasan && newSurat.ringkasan !== '-' ? `📝 *Ringkasan:* _${newSurat.ringkasan}_\n` : '') +
+            (driveLink ? `\n🔗 [Buka Berkas di Google Drive](${driveLink})\n\n` : '\n') +
+            `_Data otomatis tersimpan di tab Google Sheets **${SHEET_SURAT}**._`,
+          { parse_mode: 'Markdown', reply_markup: keyboard, link_preview_options: { is_disabled: true } }
+        );
+        return;
+      }
+
       if (driveLink) {
         const keyboard = new InlineKeyboard()
           .url('📸 Buka Foto di Drive', driveLink)
