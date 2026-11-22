@@ -229,12 +229,32 @@ export interface DriveFileResult {
 }
 
 /**
- * Daftar ID folder surat Google Drive yang terhubung
+ * Daftar ID folder surat & administrasi Google Drive yang terhubung
  */
 export const SURAT_FOLDER_IDS = [
-  '1LCwlNDwD922Y0EYsL3hKiz7Zo2nXUHRL',
-  '1NFps3FWK9T6Rd0DHefcN9iTlLqcXjw74',
-  '1_4VqK8zidqkkMyPjFojT4r7eAG4sW678',
+  // 3 Folder Utama dari User:
+  '1LCwlNDwD922Y0EYsL3hKiz7Zo2nXUHRL', // 01_DKC_Cilacap
+  '1NFps3FWK9T6Rd0DHefcN9iTlLqcXjw74', // 02_UNIT_DKC
+  '1_4VqK8zidqkkMyPjFojT4r7eAG4sW678', // komputer dkc
+
+  // Subfolder Surat & Administrasi:
+  '1aHMjguyBmnen98jH4lwjcibVNp9ZyzKD', // 07_surat izin dll
+  '1l-Vr6Y-qlIB8ahS80YvCcE5mGNuA-PKR', // 05_Surat_Permohonan_dan_Undangan
+  '1PEIpv_k5fyNtOb5EjsGaK0IjpePg4caY', // 02_Berkas_SPPD_dan_Surat_Tugas
+  '1bjjAlezvV-Zbk1yr8RuGEjt7WQ9d47ke', // 01_Administrasi_dan_SK
+  '1h0xyKKc3qcMHaGXs5mrS-s00xNZx8XYU', // 06_SK_Sertifikat_dan_Keperluan_SKP
+  '1RefCji9dj03SKO4Sk_NOKnYsUWMpluNg', // 06_bendahara
+  '1RfneCTg2HYuWsKS20derdxlmjTksvpar', // 04_Formulir_dan_Respon
+  '1P6xNqOQhaZdefmylMR5Yzm2D7bZv3y8u', // 04_Berkas_Proposal_Laporan_dan_LPJ
+  '1Kg4JBckf8hmoc-xx9gojCczdlUJKrtdE', // 03_Berkas_Tanda_Terima_dan_Fasilitas
+  '1ZeMqpjfo_3j_28b5iARBAHw7hdaEpYBb', // 01_Berkas_Anggaran_dan_RAB
+  '1Dy0TGgYu67bjVrorVjGMXchBIPShlqKT', // 19. Keperluan SKP
+  '1LNfdPpfcOFGQlMHdp3pQ0P4tfkOIIoPe', // file lain
+  '1uuPSijLbH9PR2TgLypeiWWfICIWPnT-E', // 5_UPSK_dan_Unit_Lain
+  '1iUgpMl5prOLHCyeypOOZjHKHQkfxGtTl', // 4_Unpasa_SakaPariwisata
+  '1sRf8NZHWs-MbiCYljgV7uoYx6mWCajDV', // 3_Ubaloka
+  '17F6MJ_iSOoIZi3oihmW5WZc-Ei5Zhq82', // 2_Cyber_CYJI
+  '1ppvjNmiBBvnH2mj7DKV5hyg-nF7KPgCO', // 1_Paspanca
 ];
 
 export function getAllSuratFolderIds(): string[] {
@@ -257,24 +277,36 @@ export async function searchDriveFiles(query: string): Promise<DriveFileResult[]
     const drive = google.drive({ version: 'v3', auth });
     const targetFolderIds = getAllSuratFolderIds();
 
-    const words = query
+    const rawWords = query
+      .toLowerCase()
       .replace(/['"\\]/g, '')
       .trim()
       .split(/\s+/)
       .filter((w) => w.length >= 2);
 
-    if (words.length === 0) return [];
+    if (rawWords.length === 0) return [];
 
-    const clauses = words.slice(0, 3).map((w) => `name contains '${w}'`);
+    // Normalisasi sinonim umum kata surat Indonesia
+    const normalized = rawWords.map((w) => {
+      if (w === 'ijin') return 'izin';
+      if (w === 'ortu') return 'orang';
+      if (w === 'rekom') return 'rekomendasi';
+      return w;
+    });
+
+    // Jika kata pencarian mengandung kata kunci spesifik selain kata 'surat', fokuskan ke kata kunci spesifik
+    const specificWords = normalized.filter((w) => w !== 'surat');
+    const searchWords = specificWords.length > 0 ? specificWords : normalized;
+    const clauses = searchWords.slice(0, 3).map((w) => `name contains '${w}'`);
     const nameQuery = clauses.join(' and ');
 
     const results: DriveFileResult[] = [];
     const seenIds = new Set<string>();
 
-    // 1. Cari berkas di dalam setiap folder surat yang terhubung
-    for (const folderId of targetFolderIds) {
+    // 1. Cari berkas di seluruh folder secara paralel
+    const promises = targetFolderIds.map(async (folderId) => {
       try {
-        const q = `'${folderId}' in parents and (${nameQuery}) and trashed = false`;
+        const q = `'${folderId}' in parents and (${nameQuery}) and mimeType != 'application/vnd.google-apps.folder' and trashed = false`;
         const res = await drive.files.list({
           q,
           fields: 'files(id, name, mimeType, webViewLink, createdTime, size)',
@@ -282,29 +314,31 @@ export async function searchDriveFiles(query: string): Promise<DriveFileResult[]
           supportsAllDrives: true,
           includeItemsFromAllDrives: true,
         });
+        return res.data.files || [];
+      } catch {
+        return [];
+      }
+    });
 
-        for (const f of res.data.files || []) {
-          if (f.id && !seenIds.has(f.id)) {
-            seenIds.add(f.id);
-            results.push({
-              id: f.id,
-              name: f.name || 'Dokumen Surat',
-              mimeType: f.mimeType || 'application/octet-stream',
-              webViewLink: f.webViewLink || `https://drive.google.com/file/d/${f.id}/view`,
-              size: f.size,
-              createdTime: f.createdTime,
-            });
-          }
-        }
-      } catch (err: any) {
-        // Abaikan folder jika belum diberi izin akses oleh user
+    const folderFiles = (await Promise.all(promises)).flat();
+    for (const f of folderFiles) {
+      if (f.id && !seenIds.has(f.id)) {
+        seenIds.add(f.id);
+        results.push({
+          id: f.id,
+          name: f.name || 'Dokumen Surat',
+          mimeType: f.mimeType || 'application/octet-stream',
+          webViewLink: f.webViewLink || `https://drive.google.com/file/d/${f.id}/view`,
+          size: f.size,
+          createdTime: f.createdTime,
+        });
       }
     }
 
-    // 2. Jika tidak ada hasil dari folder spesifik di atas, cari secara global di Drive Service Account
+    // 2. Jika tidak ada hasil dari folder spesifik di atas, coba fallback pencarian global
     if (results.length === 0) {
       try {
-        const q = `(${nameQuery}) and trashed = false`;
+        const q = `(${nameQuery}) and mimeType != 'application/vnd.google-apps.folder' and trashed = false`;
         const res = await drive.files.list({
           q,
           fields: 'files(id, name, mimeType, webViewLink, createdTime, size)',
