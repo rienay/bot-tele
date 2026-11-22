@@ -6,7 +6,7 @@ export const SHEET_AKSES_BOT = '_AksesBot';
 const HEADER_AKSES_BOT = ['Telegram ID', 'Nama', 'Username', 'Role', 'Status', 'Waktu Diperbarui'];
 
 function getSpreadsheetId(): string {
-  const spreadsheetId = process.env.GOOGLE_SHEET_ID;
+  const spreadsheetId = process.env.GOOGLE_SHEET_ID || process.env.GOOGLE_SPREADSHEET_ID;
   if (!spreadsheetId) {
     throw new Error('GOOGLE_SHEET_ID belum dikonfigurasi di file .env');
   }
