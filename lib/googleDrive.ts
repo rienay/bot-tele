@@ -229,13 +229,33 @@ export interface DriveFileResult {
 }
 
 /**
- * Mencari berkas langsung di Google Drive berdasarkan kata kunci
+ * Daftar ID folder surat Google Drive yang terhubung
+ */
+export const SURAT_FOLDER_IDS = [
+  '1LCwlNDwD922Y0EYsL3hKiz7Zo2nXUHRL',
+  '1NFps3FWK9T6Rd0DHefcN9iTlLqcXjw74',
+  '1_4VqK8zidqkkMyPjFojT4r7eAG4sW678',
+];
+
+export function getAllSuratFolderIds(): string[] {
+  const envVal = process.env.GOOGLE_DRIVE_SURAT_FOLDERS || process.env.GOOGLE_DRIVE_FOLDER_ID || '';
+  const extracted = envVal
+    .split(',')
+    .map((s) => extractFolderId(s))
+    .filter(Boolean);
+
+  const combined = new Set([...SURAT_FOLDER_IDS, ...extracted]);
+  return Array.from(combined);
+}
+
+/**
+ * Mencari berkas langsung di Google Drive berdasarkan kata kunci (di seluruh folder surat yang terhubung)
  */
 export async function searchDriveFiles(query: string): Promise<DriveFileResult[]> {
   try {
     const auth = getGoogleAuth();
     const drive = google.drive({ version: 'v3', auth });
-    const folderId = extractFolderId(process.env.GOOGLE_DRIVE_FOLDER_ID);
+    const targetFolderIds = getAllSuratFolderIds();
 
     const words = query
       .replace(/['"\\]/g, '')
@@ -248,26 +268,70 @@ export async function searchDriveFiles(query: string): Promise<DriveFileResult[]
     const clauses = words.slice(0, 3).map((w) => `name contains '${w}'`);
     const nameQuery = clauses.join(' and ');
 
-    const q = folderId
-      ? `'${folderId}' in parents and (${nameQuery}) and trashed = false`
-      : `(${nameQuery}) and trashed = false`;
+    const results: DriveFileResult[] = [];
+    const seenIds = new Set<string>();
 
-    const res = await drive.files.list({
-      q,
-      fields: 'files(id, name, mimeType, webViewLink, createdTime, size)',
-      pageSize: 10,
-      supportsAllDrives: true,
-      includeItemsFromAllDrives: true,
-    });
+    // 1. Cari berkas di dalam setiap folder surat yang terhubung
+    for (const folderId of targetFolderIds) {
+      try {
+        const q = `'${folderId}' in parents and (${nameQuery}) and trashed = false`;
+        const res = await drive.files.list({
+          q,
+          fields: 'files(id, name, mimeType, webViewLink, createdTime, size)',
+          pageSize: 15,
+          supportsAllDrives: true,
+          includeItemsFromAllDrives: true,
+        });
 
-    return (res.data.files || []).map((f) => ({
-      id: f.id || '',
-      name: f.name || 'Dokumen Tanpa Nama',
-      mimeType: f.mimeType || 'application/octet-stream',
-      webViewLink: f.webViewLink || `https://drive.google.com/file/d/${f.id}/view`,
-      size: f.size,
-      createdTime: f.createdTime,
-    }));
+        for (const f of res.data.files || []) {
+          if (f.id && !seenIds.has(f.id)) {
+            seenIds.add(f.id);
+            results.push({
+              id: f.id,
+              name: f.name || 'Dokumen Surat',
+              mimeType: f.mimeType || 'application/octet-stream',
+              webViewLink: f.webViewLink || `https://drive.google.com/file/d/${f.id}/view`,
+              size: f.size,
+              createdTime: f.createdTime,
+            });
+          }
+        }
+      } catch (err: any) {
+        // Abaikan folder jika belum diberi izin akses oleh user
+      }
+    }
+
+    // 2. Jika tidak ada hasil dari folder spesifik di atas, cari secara global di Drive Service Account
+    if (results.length === 0) {
+      try {
+        const q = `(${nameQuery}) and trashed = false`;
+        const res = await drive.files.list({
+          q,
+          fields: 'files(id, name, mimeType, webViewLink, createdTime, size)',
+          pageSize: 10,
+          supportsAllDrives: true,
+          includeItemsFromAllDrives: true,
+        });
+
+        for (const f of res.data.files || []) {
+          if (f.id && !seenIds.has(f.id)) {
+            seenIds.add(f.id);
+            results.push({
+              id: f.id,
+              name: f.name || 'Dokumen Surat',
+              mimeType: f.mimeType || 'application/octet-stream',
+              webViewLink: f.webViewLink || `https://drive.google.com/file/d/${f.id}/view`,
+              size: f.size,
+              createdTime: f.createdTime,
+            });
+          }
+        }
+      } catch (err) {
+        console.warn('Gagal search drive global:', err);
+      }
+    }
+
+    return results;
   } catch (err) {
     console.warn('Gagal search drive files:', err);
     return [];
