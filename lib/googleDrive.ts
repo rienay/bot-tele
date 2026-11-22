@@ -210,8 +210,8 @@ export async function testDriveUpload(): Promise<{ success: boolean; message: st
 export function extractDriveFileId(rawUrlOrId?: string): string {
   if (!rawUrlOrId) return '';
   const trimmed = rawUrlOrId.trim();
-  const matchFile = trimmed.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
-  if (matchFile) return matchFile[1];
+  const matchD = trimmed.match(/\/d\/([a-zA-Z0-9_-]+)/);
+  if (matchD) return matchD[1];
   const matchId = trimmed.match(/[?&]id=([a-zA-Z0-9_-]+)/);
   if (matchId) return matchId[1];
   const matchDirect = trimmed.match(/^([a-zA-Z0-9_-]{20,})$/);
@@ -277,14 +277,22 @@ export async function searchDriveFiles(query: string): Promise<DriveFileResult[]
     const drive = google.drive({ version: 'v3', auth });
     const targetFolderIds = getAllSuratFolderIds();
 
-    const rawWords = query
-      .toLowerCase()
+    const cleanQ = query.toLowerCase().trim();
+    const isShowAll =
+      cleanQ === 'semua' ||
+      cleanQ === 'all' ||
+      cleanQ === 'daftar' ||
+      cleanQ === 'list' ||
+      cleanQ === 'semua surat' ||
+      cleanQ === '*';
+
+    const rawWords = cleanQ
       .replace(/['"\\]/g, '')
       .trim()
       .split(/\s+/)
       .filter((w) => w.length >= 2);
 
-    if (rawWords.length === 0) return [];
+    if (!isShowAll && rawWords.length === 0) return [];
 
     // Normalisasi sinonim umum kata surat Indonesia
     const normalized = rawWords.map((w) => {
@@ -306,11 +314,13 @@ export async function searchDriveFiles(query: string): Promise<DriveFileResult[]
     // 1. Cari berkas di seluruh folder secara paralel
     const promises = targetFolderIds.map(async (folderId) => {
       try {
-        const q = `'${folderId}' in parents and (${nameQuery}) and mimeType != 'application/vnd.google-apps.folder' and trashed = false`;
+        const q = isShowAll
+          ? `'${folderId}' in parents and mimeType != 'application/vnd.google-apps.folder' and trashed = false`
+          : `'${folderId}' in parents and (${nameQuery}) and mimeType != 'application/vnd.google-apps.folder' and trashed = false`;
         const res = await drive.files.list({
           q,
           fields: 'files(id, name, mimeType, webViewLink, createdTime, size)',
-          pageSize: 15,
+          pageSize: isShowAll ? 10 : 25,
           supportsAllDrives: true,
           includeItemsFromAllDrives: true,
         });

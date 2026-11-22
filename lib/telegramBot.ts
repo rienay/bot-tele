@@ -142,6 +142,7 @@ const cariSuratStates = new Map<number, boolean>();
 interface SuratSearchSession {
   query: string;
   results: SuratSearchResult[];
+  page?: number;
   timestamp: number;
 }
 const suratSearchSessions = new Map<number, SuratSearchSession>();
@@ -3072,21 +3073,136 @@ async function handlePromptCariSurat(ctx: any) {
   if (chatId) cariSuratStates.set(chatId, true);
 
   const keyboard = new InlineKeyboard()
+    .text('📋 Tampilkan Semua Surat', 'surat_cari_semua')
+    .row()
     .text('❌ Batal', 'surat_cari_batal')
     .url('🌐 Buka Tabel Web', WEB_SURAT_URL);
 
   await ctx.reply(
     `🔍 *Pencarian Arsip Persuratan & Berkas DKC*\n\n` +
       `Silakan ketik kata kunci surat yang ingin dicari:\n` +
-      `_(contoh: \`surat ijin orang tua\`, \`dispensasi\`, \`mandat raimuna\`, \`undangan kwarcab\`, atau nomor surat)_\n\n` +
-      `💡 _Sistem otomatis mencari di data Google Sheets dan berkas dokumen Google Drive._\n` +
-      `_Ketik /batal jika ingin membatalkan._`,
+      `_(contoh: \`surat ijin orang tua\`, \`undangan\`, \`dispensasi\`, \`sk\`, atau nomor surat)_\n\n` +
+      `💡 _Sistem otomatis mencari di data Google Sheets dan seluruh berkas Google Drive DKC._\n` +
+      `_Atau tekan tombol *Tampilkan Semua Surat* di bawah untuk melihat seluruh arsip:_`,
     { parse_mode: 'Markdown', reply_markup: keyboard }
   );
 }
 
 /**
- * Menjalankan pencarian surat & menampilkan daftar bernomor sesuai kata kunci
+ * Menampilkan daftar hasil pencarian surat dengan penomoran rapi dan pagination jika banyak
+ */
+async function renderSuratList(
+  ctx: any,
+  session: { query: string; results: SuratSearchResult[]; page?: number },
+  page: number = 0,
+  isEdit: boolean = false
+) {
+  const PAGE_SIZE = 10;
+  const results = session.results;
+  const total = results.length;
+  const totalPages = Math.ceil(total / PAGE_SIZE) || 1;
+  const currentPage = Math.max(0, Math.min(page, totalPages - 1));
+  session.page = currentPage;
+
+  const startIndex = currentPage * PAGE_SIZE;
+  const pageResults = results.slice(startIndex, startIndex + PAGE_SIZE);
+
+  let text =
+    `🔍 *Hasil Pencarian Surat: "${session.query}"*\n` +
+    `Ditemukan *${total} surat/berkas*` +
+    (totalPages > 1 ? ` _(Halaman ${currentPage + 1} dari ${totalPages})_` : '') +
+    `:\n\n`;
+
+  pageResults.forEach((it, idx) => {
+    const globalIdx = startIndex + idx;
+    const numIcon =
+      globalIdx === 0
+        ? '1️⃣'
+        : globalIdx === 1
+        ? '2️⃣'
+        : globalIdx === 2
+        ? '3️⃣'
+        : globalIdx === 3
+        ? '4️⃣'
+        : globalIdx === 4
+        ? '5️⃣'
+        : globalIdx === 5
+        ? '6️⃣'
+        : globalIdx === 6
+        ? '7️⃣'
+        : globalIdx === 7
+        ? '8️⃣'
+        : globalIdx === 8
+        ? '9️⃣'
+        : `${globalIdx + 1}.`;
+
+    const badge =
+      it.source === 'drive'
+        ? '📁 Google Drive'
+        : it.jenis === 'Surat Masuk'
+        ? '📥 Surat Masuk'
+        : '📤 Surat Keluar';
+    const kode = it.kodeArsip ? `\`[${it.kodeArsip}]\` ` : '';
+    const noStr =
+      it.nomorSurat && it.nomorSurat !== '-' ? `\n   🔢 No: \`${it.nomorSurat}\`` : '';
+    const tanggalStr =
+      it.tanggalSurat && it.tanggalSurat !== '-' ? ` | 📅 ${it.tanggalSurat}` : '';
+    const pihak =
+      it.pengirim && it.pengirim !== '-' && it.pengirim !== 'Google Drive DKC'
+        ? `\n   🏢 Pengirim: ${it.pengirim}`
+        : '';
+
+    text += `${numIcon} *${kode}${it.perihal}*\n   🏷️ ${badge}${tanggalStr}${noStr}${pihak}\n\n`;
+  });
+
+  text +=
+    `━━━━━━━━━━━━━━━━━━━━━\n` +
+    `👇 *Pilih nomor surat di bawah untuk melihat rincian & mendownload berkas:*`;
+
+  const keyboard = new InlineKeyboard();
+  pageResults.forEach((_, idx) => {
+    const globalIdx = startIndex + idx;
+    keyboard.text(`📄 Surat ${globalIdx + 1}`, `surat_pick:${globalIdx}`);
+    if ((idx + 1) % 3 === 0) keyboard.row();
+  });
+
+  if (pageResults.length % 3 !== 0) keyboard.row();
+
+  // Tombol navigasi jika ada lebih dari 1 halaman
+  if (totalPages > 1) {
+    if (currentPage > 0) {
+      keyboard.text('⬅️ Sebelumnya', `surat_page:${currentPage - 1}`);
+    }
+    keyboard.text(`📄 Hal ${currentPage + 1}/${totalPages}`, 'noop_page');
+    if (currentPage < totalPages - 1) {
+      keyboard.text('Berikutnya ➡️', `surat_page:${currentPage + 1}`);
+    }
+    keyboard.row();
+  }
+
+  keyboard.text('🔍 Cari Kata Kunci Lain', 'surat_cari_prompt');
+  keyboard.url('🌐 Buka Tabel Web', WEB_SURAT_URL);
+
+  if (isEdit) {
+    try {
+      await ctx.editMessageText(text, {
+        parse_mode: 'Markdown',
+        reply_markup: keyboard,
+        link_preview_options: { is_disabled: true },
+      });
+      return;
+    } catch {}
+  }
+
+  await ctx.reply(text, {
+    parse_mode: 'Markdown',
+    reply_markup: keyboard,
+    link_preview_options: { is_disabled: true },
+  });
+}
+
+/**
+ * Menjalankan pencarian surat & menampilkan seluruh daftar bernomor
  */
 async function handleCariSurat(ctx: any, query: string) {
   const chatId = ctx.chat?.id;
@@ -3098,89 +3214,59 @@ async function handleCariSurat(ctx: any, query: string) {
       suratSearchSessions.set(chatId, {
         query,
         results,
+        page: 0,
         timestamp: Date.now(),
       });
     }
 
     if (results.length === 0) {
       const keyboard = new InlineKeyboard()
-        .text('🔍 Cari Kata Kunci Lain', 'surat_cari_prompt')
+        .text('📋 Tampilkan Semua Surat', 'surat_cari_semua')
         .row()
-        .url('🌐 Buka Web Persuratan', WEB_SURAT_URL)
-        .text('🔙 Menu Persuratan', 'surat_main');
+        .text('🔍 Cari Kata Kunci Lain', 'surat_cari_prompt')
+        .url('🌐 Buka Web Persuratan', WEB_SURAT_URL);
 
       await ctx.reply(
         `🔍 *Hasil Pencarian Surat: "${query}"*\n\n` +
           `❌ Tidak ditemukan surat atau berkas dokumen yang cocok dengan kata kunci tersebut.\n\n` +
           `💡 *Tips Pencarian:*\n` +
-          `• Gunakan kata kunci yang lebih ringkas (misal: \`ijin\`, \`izin\`, \`dispensasi\`, \`mandat\`, \`undangan\`).\n` +
-          `• Cari berdasarkan nomor surat (misal: \`045\` atau \`11.01\`).\n` +
-          `• Seluruh arsip lengkap juga dapat dilihat di tabel web:`,
+          `• Gunakan kata kunci yang lebih ringkas (misal: \`ijin\`, \`izin\`, \`dispensasi\`, \`undangan\`, \`sk\`).\n` +
+          `• Atau tekan tombol *Tampilkan Semua Surat* di bawah untuk melihat seluruh arsip surat:`,
         { parse_mode: 'Markdown', reply_markup: keyboard }
       );
       return;
     }
 
-    let text =
-      `🔍 *Hasil Pencarian Surat: "${query}"*\n` +
-      `Ditemukan *${results.length} surat/berkas* yang sesuai:\n\n`;
-
-    results.forEach((it, idx) => {
-      const numIcon =
-        idx === 0
-          ? '1️⃣'
-          : idx === 1
-          ? '2️⃣'
-          : idx === 2
-          ? '3️⃣'
-          : idx === 3
-          ? '4️⃣'
-          : idx === 4
-          ? '5️⃣'
-          : `${idx + 1}.`;
-      const badge =
-        it.source === 'drive'
-          ? '📁 Berkas Google Drive'
-          : it.jenis === 'Surat Masuk'
-          ? '📥 Surat Masuk'
-          : '📤 Surat Keluar';
-      const kode = it.kodeArsip ? `\`[${it.kodeArsip}]\` ` : '';
-      const noStr =
-        it.nomorSurat && it.nomorSurat !== '-' ? `\n   🔢 No: \`${it.nomorSurat}\`` : '';
-      const tanggalStr =
-        it.tanggalSurat && it.tanggalSurat !== '-' ? ` | 📅 ${it.tanggalSurat}` : '';
-      const pihak =
-        it.pengirim && it.pengirim !== '-' && it.pengirim !== 'Google Drive DKC'
-          ? `\n   🏢 Pengirim: ${it.pengirim}`
-          : '';
-
-      text += `${numIcon} *${kode}${it.perihal}*\n   🏷️ ${badge}${tanggalStr}${noStr}${pihak}\n\n`;
-    });
-
-    text +=
-      `━━━━━━━━━━━━━━━━━━━━━\n` +
-      `👇 *Pilih nomor surat di bawah untuk melihat detail & mengunduh/membuka berkas:*`;
-
-    const keyboard = new InlineKeyboard();
-    results.forEach((_, idx) => {
-      keyboard.text(`📄 Surat ${idx + 1}`, `surat_pick:${idx}`);
-      if ((idx + 1) % 3 === 0) keyboard.row();
-    });
-
-    if (results.length % 3 !== 0) keyboard.row();
-    keyboard.text('🔍 Cari Kata Kunci Lain', 'surat_cari_prompt');
-    keyboard.url('🌐 Buka Tabel Web', WEB_SURAT_URL);
-
-    await ctx.reply(text, {
-      parse_mode: 'Markdown',
-      reply_markup: keyboard,
-      link_preview_options: { is_disabled: true },
-    });
+    const session = chatId ? suratSearchSessions.get(chatId) : null;
+    if (session) {
+      await renderSuratList(ctx, session, 0, false);
+    }
   } catch (err: any) {
     console.error('Error saat mencari surat:', err);
     await ctx.reply(`❌ Terjadi kendala saat mencari surat: ${err?.message || err}`);
   }
 }
+
+bot.callbackQuery('surat_cari_semua', async (ctx) => {
+  await ctx.answerCallbackQuery('Memuat seluruh daftar surat...');
+  await handleCariSurat(ctx, 'semua');
+});
+
+bot.callbackQuery(/^surat_page:(\d+)$/, async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const chatId = ctx.chat?.id;
+  const page = parseInt(ctx.match[1], 10);
+  const session = chatId ? suratSearchSessions.get(chatId) : null;
+  if (!session || session.results.length === 0) {
+    await handlePromptCariSurat(ctx);
+    return;
+  }
+  await renderSuratList(ctx, session, page, true);
+});
+
+bot.callbackQuery('noop_page', async (ctx) => {
+  await ctx.answerCallbackQuery();
+});
 
 bot.callbackQuery('surat_cari_prompt', async (ctx) => {
   await ctx.answerCallbackQuery();
@@ -3203,62 +3289,7 @@ bot.callbackQuery('surat_back_list', async (ctx) => {
     return;
   }
 
-  const results = session.results;
-  let text =
-    `🔍 *Hasil Pencarian Surat: "${session.query}"*\n` +
-    `Ditemukan *${results.length} surat/berkas* yang sesuai:\n\n`;
-
-  results.forEach((it, idx) => {
-    const numIcon =
-      idx === 0
-        ? '1️⃣'
-        : idx === 1
-        ? '2️⃣'
-        : idx === 2
-        ? '3️⃣'
-        : idx === 3
-        ? '4️⃣'
-        : idx === 4
-        ? '5️⃣'
-        : `${idx + 1}.`;
-    const badge =
-      it.source === 'drive'
-        ? '📁 Berkas Google Drive'
-        : it.jenis === 'Surat Masuk'
-        ? '📥 Surat Masuk'
-        : '📤 Surat Keluar';
-    const kode = it.kodeArsip ? `\`[${it.kodeArsip}]\` ` : '';
-    const noStr =
-      it.nomorSurat && it.nomorSurat !== '-' ? `\n   🔢 No: \`${it.nomorSurat}\`` : '';
-    const tanggalStr =
-      it.tanggalSurat && it.tanggalSurat !== '-' ? ` | 📅 ${it.tanggalSurat}` : '';
-    const pihak =
-      it.pengirim && it.pengirim !== '-' && it.pengirim !== 'Google Drive DKC'
-        ? `\n   🏢 Pengirim: ${it.pengirim}`
-        : '';
-
-    text += `${numIcon} *${kode}${it.perihal}*\n   🏷️ ${badge}${tanggalStr}${noStr}${pihak}\n\n`;
-  });
-
-  text +=
-    `━━━━━━━━━━━━━━━━━━━━━\n` +
-    `👇 *Pilih nomor surat di bawah untuk melihat detail & mengunduh/membuka berkas:*`;
-
-  const keyboard = new InlineKeyboard();
-  results.forEach((_, idx) => {
-    keyboard.text(`📄 Surat ${idx + 1}`, `surat_pick:${idx}`);
-    if ((idx + 1) % 3 === 0) keyboard.row();
-  });
-
-  if (results.length % 3 !== 0) keyboard.row();
-  keyboard.text('🔍 Cari Kata Kunci Lain', 'surat_cari_prompt');
-  keyboard.url('🌐 Buka Tabel Web', WEB_SURAT_URL);
-
-  await ctx.reply(text, {
-    parse_mode: 'Markdown',
-    reply_markup: keyboard,
-    link_preview_options: { is_disabled: true },
-  });
+  await renderSuratList(ctx, session, session.page || 0, false);
 });
 
 bot.callbackQuery(/^surat_pick:(\d+)$/, async (ctx) => {
@@ -3279,6 +3310,7 @@ bot.callbackQuery(/^surat_pick:(\d+)$/, async (ctx) => {
 
   const detailText =
     `📑 *Rincian Dokumen Surat #${index + 1}*\n\n` +
+    `📋 *Perihal:* *${it.perihal}*\n` +
     (it.kodeArsip ? `🏷️ *Kode Arsip:* \`${it.kodeArsip}\`\n` : '') +
     `📂 *Jenis Dokumen:* *${badge}*\n` +
     (it.nomorSurat && it.nomorSurat !== '-' ? `🔢 *Nomor Surat:* \`${it.nomorSurat}\`\n` : '') +
@@ -3286,20 +3318,24 @@ bot.callbackQuery(/^surat_pick:(\d+)$/, async (ctx) => {
     (it.tanggalDiterima && it.tanggalDiterima !== '-' ? `📥 *Tanggal Diterima:* ${it.tanggalDiterima}\n` : '') +
     (it.pengirim && it.pengirim !== '-' ? `🏢 *Pengirim / Asal:* ${it.pengirim}\n` : '') +
     (it.tujuan && it.tujuan !== '-' ? `🎯 *Tujuan / Penerima:* ${it.tujuan}\n` : '') +
-    `📋 *Perihal:* *${it.perihal}*\n` +
     (it.kategori && it.kategori !== '-' ? `🏷️ *Kategori & Sifat:* ${it.kategori} (${it.sifat || 'Biasa'})\n` : '') +
     (it.ringkasan && it.ringkasan !== '-' ? `📝 *Ringkasan:* _${it.ringkasan}_\n` : '') +
     (it.pic && it.pic !== '-' ? `👤 *PIC Input:* ${it.pic}\n` : '') +
-    (it.berkas ? `\n🔗 *Status Berkas:* [Tersedia di Google Drive](${it.berkas})` : '\n⚠️ *Status Berkas:* _Tautan berkas belum tersedia_');
+    (it.berkas ? `\n🔗 *Status Berkas:* [Tersedia untuk Diunduh](${it.berkas})` : '\n⚠️ *Status Berkas:* _Tautan berkas belum tersedia_') +
+    `\n\n━━━━━━━━━━━━━━━━━━━━━\n` +
+    `📥 *PILIHAN DOWNLOAD SURAT:*\n` +
+    (it.berkas
+      ? `Silakan tekan tombol di bawah ini untuk mengunduh dokumen:`
+      : `_Berkas fisik belum diunggah untuk surat ini._`);
 
   const keyboard = new InlineKeyboard();
   if (it.berkas) {
-    keyboard.url('📥 Buka di Google Drive', it.berkas);
+    keyboard.text('📥 Download Surat (Kirim ke Chat)', `surat_sendfile:${index}`);
     keyboard.row();
-    keyboard.text('📤 Kirim Dokumen ke Chat Telegram', `surat_sendfile:${index}`);
+    keyboard.url('🌐 Buka / Download di Google Drive', it.berkas);
     keyboard.row();
   }
-  keyboard.text('⬅️ Kembali ke Hasil', 'surat_back_list');
+  keyboard.text('⬅️ Kembali ke Daftar Surat', 'surat_back_list');
   keyboard.text('🔍 Cari Surat Lain', 'surat_cari_prompt');
 
   await ctx.reply(detailText, {
@@ -3329,7 +3365,7 @@ bot.callbackQuery(/^surat_sendfile:(\d+)$/, async (ctx) => {
   await ctx.replyWithChatAction('upload_document');
 
   const waitMsg = await ctx.reply(
-    `⏳ *Mengunduh berkas surat dari Google Drive & mengirimkan ke chat Telegram...*\n` +
+    `⏳ *Mengunduh dokumen surat dari Google Drive & mengirim ke chat...*\n` +
       `_Mohon tunggu sebentar..._`,
     { parse_mode: 'Markdown' }
   );
@@ -3337,16 +3373,22 @@ bot.callbackQuery(/^surat_sendfile:(\d+)$/, async (ctx) => {
   try {
     const fileData = await downloadDriveFile(it.berkas);
     if (fileData) {
-      const safeTitle = it.perihal.replace(/[/\\?%*:|"<>]/g, '_');
-      const ext = fileData.fileName.includes('.') ? fileData.fileName.split('.').pop() : 'pdf';
-      const sendFileName = `${safeTitle.slice(0, 40)}.${ext}`;
+      const cleanBase = (fileData.fileName || it.perihal).replace(/[/\\?%*:|"<>]/g, '_').trim();
+      const ext = fileData.fileName && fileData.fileName.includes('.')
+        ? fileData.fileName.split('.').pop()
+        : fileData.mimeType.includes('word') ? 'docx' : 'pdf';
+      const sendFileName = cleanBase.toLowerCase().endsWith(`.${ext?.toLowerCase()}`)
+        ? cleanBase
+        : `${cleanBase}.${ext}`;
 
       await ctx.replyWithDocument(new InputFile(fileData.buffer, sendFileName), {
         caption:
-          `📄 *Berkas Surat:* *${it.perihal}*\n` +
+          `✅ *File Surat Berhasil Diunduh!*\n\n` +
+          `📄 *Nama Berkas:* *${it.perihal}*\n` +
           (it.nomorSurat && it.nomorSurat !== '-' ? `🔢 *No. Surat:* \`${it.nomorSurat}\`\n` : '') +
           (it.kodeArsip ? `🏷️ *Kode Arsip:* \`${it.kodeArsip}\`\n` : '') +
-          `🔗 [Buka di Google Drive](${it.berkas})`,
+          `🔗 [Tautan di Google Drive](${it.berkas})\n\n` +
+          `_Ketuk berkas di atas untuk langsung membuka atau menyimpan di perangkat Anda._`,
         parse_mode: 'Markdown',
       });
 
@@ -3356,8 +3398,8 @@ bot.callbackQuery(/^surat_sendfile:(\d+)$/, async (ctx) => {
     } else {
       const keyboard = new InlineKeyboard().url('🌐 Buka di Google Drive', it.berkas);
       await ctx.reply(
-        `ℹ️ Berkas tidak dapat diunduh otomatis ke bot karena pembatasan hak akses Drive pribadi.\n` +
-          `Silakan buka dan download langsung melalui tautan Google Drive di bawah ini:`,
+        `ℹ️ Berkas tidak dapat dikirim otomatis sebagai file chat (kemungkinan folder atau dibatasi Google Drive).\n` +
+          `Silakan buka dan download langsung melalui Google Drive di bawah ini:`,
         { reply_markup: keyboard }
       );
     }
@@ -3366,7 +3408,7 @@ bot.callbackQuery(/^surat_sendfile:(\d+)$/, async (ctx) => {
     const keyboard = new InlineKeyboard().url('🌐 Buka di Google Drive', it.berkas);
     await ctx.reply(
       `⚠️ Terjadi kendala saat mengunduh berkas: ${dlErr?.message || dlErr}\n` +
-        `Silakan buka langsung dari Google Drive:`,
+        `Silakan unduh langsung dari Google Drive:`,
       { reply_markup: keyboard }
     );
   }

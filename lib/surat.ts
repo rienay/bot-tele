@@ -443,8 +443,16 @@ export async function cariSurat(rawQuery: string): Promise<SuratSearchResult[]> 
   const results: SuratSearchResult[] = [];
   const registeredDriveIds = new Set<string>();
 
+  const isShowAll =
+    query === 'semua' ||
+    query === 'all' ||
+    query === 'daftar' ||
+    query === 'list' ||
+    query === 'semua surat' ||
+    query === 'arsip';
+
   for (const it of allItems) {
-    let score = 0;
+    let score = isShowAll ? 100 : 0;
     const perihalLower = it.perihal.toLowerCase();
     const noLower = it.nomorSurat.toLowerCase();
     const kodeLower = it.kodeArsip.toLowerCase();
@@ -454,30 +462,32 @@ export async function cariSurat(rawQuery: string): Promise<SuratSearchResult[]> 
     const kategoriLower = it.kategori.toLowerCase();
 
     if (it.berkas) {
-      const match = it.berkas.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+      const match = it.berkas.match(/\/d\/([a-zA-Z0-9_-]+)/);
       if (match) registeredDriveIds.add(match[1]);
     }
 
-    // 1. Cocok persis seluruh query
-    if (perihalLower.includes(query)) score += 80;
-    if (noLower.includes(query)) score += 90;
-    if (kodeLower.includes(query)) score += 100;
-    if (ringkasanLower.includes(query)) score += 50;
+    if (!isShowAll) {
+      // 1. Cocok persis seluruh query
+      if (perihalLower.includes(query)) score += 80;
+      if (noLower.includes(query)) score += 90;
+      if (kodeLower.includes(query)) score += 100;
+      if (ringkasanLower.includes(query)) score += 50;
 
-    const stopWords = new Set(['surat', 'dan', 'di', 'ke', 'dari', 'tentang', 'untuk', 'yang']);
-    const hasMeaningfulTokens = Array.from(expandedTokens).some((t) => !stopWords.has(t) && t.length > 2);
+      const stopWords = new Set(['surat', 'dan', 'di', 'ke', 'dari', 'tentang', 'untuk', 'yang']);
+      const hasMeaningfulTokens = Array.from(expandedTokens).some((t) => !stopWords.has(t) && t.length > 2);
 
-    // 2. Cocok per token
-    for (const token of expandedTokens) {
-      if (token.length <= 2) continue;
-      if (hasMeaningfulTokens && stopWords.has(token)) continue;
+      // 2. Cocok per token
+      for (const token of expandedTokens) {
+        if (token.length <= 2) continue;
+        if (hasMeaningfulTokens && stopWords.has(token)) continue;
 
-      if (perihalLower.includes(token)) score += 35;
-      if (noLower.includes(token)) score += 35;
-      if (kodeLower.includes(token)) score += 40;
-      if (ringkasanLower.includes(token)) score += 20;
-      if (pengirimLower.includes(token) || tujuanLower.includes(token)) score += 20;
-      if (kategoriLower.includes(token)) score += 15;
+        if (perihalLower.includes(token)) score += 35;
+        if (noLower.includes(token)) score += 35;
+        if (kodeLower.includes(token)) score += 40;
+        if (ringkasanLower.includes(token)) score += 20;
+        if (pengirimLower.includes(token) || tujuanLower.includes(token)) score += 20;
+        if (kategoriLower.includes(token)) score += 15;
+      }
     }
 
     if (score >= 30) {
@@ -539,6 +549,6 @@ export async function cariSurat(rawQuery: string): Promise<SuratSearchResult[]> 
   }
 
   results.sort((a, b) => b.score - a.score);
-  return results.slice(0, 10);
+  return results.slice(0, 100);
 }
 
