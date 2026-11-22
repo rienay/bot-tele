@@ -1,7 +1,7 @@
 import { Bot, InputFile, InlineKeyboard } from 'grammy';
 import dns from 'dns';
 import { google } from 'googleapis';
-import { parseTextMessage, parseReceiptImage, parseDocumentSurat, ParsedSurat } from './gemini';
+import { parseTextMessage, parseReceiptImage, parseDocumentSurat, ParsedSurat, getLocalTodayDateString } from './gemini';
 import {
   appendTransaction,
   getMonthSummary,
@@ -3778,23 +3778,21 @@ bot.on('message:text', async (ctx) => {
       })();
     }
 
-    // Kirim rekap singkat di background
-    (async () => {
-      try {
-        const summary = await getMonthSummary(undefined, undefined, activeBook);
-        const saldoLabel = summary.saldo >= 0 ? '💰 *Sisa:*' : '🔻 *Defisit:*';
-        await ctx.reply(
-          `━━━━━━━━━━━━━━━━━━━━━\n` +
-            `📊 *Rekap Buku [${activeBook}]:*\n` +
-            `🟢 Masuk: ${formatRupiah(summary.totalPemasukan)}\n` +
-            `🔴 Keluar: ${formatRupiah(summary.totalPengeluaran)}\n` +
-            `${saldoLabel} ${formatRupiah(Math.abs(summary.saldo))}`,
-          { parse_mode: 'Markdown' }
-        );
-      } catch {
-        // Abaikan jika rekap background gagal
-      }
-    })();
+    // Kirim rekap singkat (diawait agar tidak beku di serverless Vercel)
+    try {
+      const summary = await getMonthSummary(undefined, undefined, activeBook);
+      const saldoLabel = summary.saldo >= 0 ? '💰 *Sisa:*' : '🔻 *Defisit:*';
+      await ctx.reply(
+        `━━━━━━━━━━━━━━━━━━━━━\n` +
+          `📊 *Rekap Buku [${activeBook}]:*\n` +
+          `🟢 Masuk: ${formatRupiah(summary.totalPemasukan)}\n` +
+          `🔴 Keluar: ${formatRupiah(summary.totalPengeluaran)}\n` +
+          `${saldoLabel} ${formatRupiah(Math.abs(summary.saldo))}`,
+        { parse_mode: 'Markdown' }
+      );
+    } catch {
+      // Abaikan jika rekap gagal
+    }
   } catch (error: any) {
     console.error('Error processing text transaction:', error);
     await ctx.reply(
@@ -4057,50 +4055,60 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
     ]);
 
     if (!parsed) {
-      // Cek apakah berkas/foto ini adalah dokumen persuratan resmi DKC
-      const parsedSurat = await parseDocumentSurat(buffer, mimeType, fileName, rawCaption).catch(() => null);
-      if (parsedSurat && parsedSurat.isSurat) {
-        const jenis = parsedSurat.jenis || 'Surat Masuk';
-        const senderName = ctx.from?.first_name || 'Pengguna';
-        const username = ctx.from?.username ? `@${ctx.from.username}` : '';
-        const pic = username ? `${senderName} (${username})` : senderName;
+      // Cek apakah berkas/foto ini adalah dokumen persuratan resmi DKC (hanya jika ada indikasi surat atau berkas dokumen)
+      const mightBeSurat =
+        mimeType === 'application/pdf' ||
+        mimeType.includes('word') ||
+        fileName.toLowerCase().endsWith('.pdf') ||
+        fileName.toLowerCase().endsWith('.docx') ||
+        /^(surat|arsip|undangan|edaran|sk|mandat|dokumen|nota dinas)/i.test(rawCaption.trim()) ||
+        rawCaption.toLowerCase().includes('surat');
 
-        const newSurat = await tambahSurat({
-          jenis,
-          nomorSurat: parsedSurat.nomorSurat || '-',
-          tanggalSurat: parsedSurat.tanggalSurat,
-          tanggalDiterima: parsedSurat.tanggalDiterima,
-          pengirim: parsedSurat.pengirim,
-          tujuan: parsedSurat.tujuan,
-          perihal: parsedSurat.perihal,
-          kategori: parsedSurat.kategori,
-          sifat: parsedSurat.sifat,
-          ringkasan: parsedSurat.ringkasan,
-          berkas: driveLink || '',
-          pic,
-        });
+      if (mightBeSurat) {
+        const parsedSurat = await parseDocumentSurat(buffer, mimeType, fileName, rawCaption).catch(() => null);
+        if (parsedSurat && parsedSurat.isSurat) {
+          const jenis = parsedSurat.jenis || 'Surat Masuk';
+          const senderName = ctx.from?.first_name || 'Pengguna';
+          const username = ctx.from?.username ? `@${ctx.from.username}` : '';
+          const pic = username ? `${senderName} (${username})` : senderName;
 
-        const keyboard = new InlineKeyboard();
-        if (driveLink) keyboard.url('📄 Buka Berkas di Drive', driveLink);
-        keyboard.url('🌐 Buka Tabel Web Persuratan', WEB_SURAT_URL);
+          const newSurat = await tambahSurat({
+            jenis,
+            nomorSurat: parsedSurat.nomorSurat || '-',
+            tanggalSurat: parsedSurat.tanggalSurat,
+            tanggalDiterima: parsedSurat.tanggalDiterima,
+            pengirim: parsedSurat.pengirim,
+            tujuan: parsedSurat.tujuan,
+            perihal: parsedSurat.perihal,
+            kategori: parsedSurat.kategori,
+            sifat: parsedSurat.sifat,
+            ringkasan: parsedSurat.ringkasan,
+            berkas: driveLink || '',
+            pic,
+          });
 
-        await ctx.reply(
-          `📑 *Terdeteksi Dokumen Surat Resmi!*\n\n` +
-            `AI mendeteksi berkas ini sebagai dokumen persuratan dan otomatis mencatatnya ke arsip DKC:\n\n` +
-            `🏷️ *Kode Arsip:* \`${newSurat.kodeArsip}\`\n` +
-            `📂 *Jenis Surat:* *${newSurat.jenis}*\n` +
-            `🔢 *No. Surat:* \`${newSurat.nomorSurat}\`\n` +
-            `📅 *Tanggal:* ${newSurat.tanggalSurat}\n` +
-            `🏢 *Pengirim:* ${newSurat.pengirim}\n` +
-            `🎯 *Tujuan:* ${newSurat.tujuan}\n` +
-            `📋 *Perihal:* *${newSurat.perihal}*\n` +
-            `🏷️ *Kategori & Sifat:* ${newSurat.kategori} (${newSurat.sifat})\n` +
-            (newSurat.ringkasan && newSurat.ringkasan !== '-' ? `📝 *Ringkasan:* _${newSurat.ringkasan}_\n` : '') +
-            (driveLink ? `\n🔗 [Buka Berkas di Google Drive](${driveLink})\n\n` : '\n') +
-            `_Data otomatis tersimpan di tab Google Sheets **${SHEET_SURAT}**._`,
-          { parse_mode: 'Markdown', reply_markup: keyboard, link_preview_options: { is_disabled: true } }
-        );
-        return;
+          const keyboard = new InlineKeyboard();
+          if (driveLink) keyboard.url('📄 Buka Berkas di Drive', driveLink);
+          keyboard.url('🌐 Buka Tabel Web Persuratan', WEB_SURAT_URL);
+
+          await ctx.reply(
+            `📑 *Terdeteksi Dokumen Surat Resmi!*\n\n` +
+              `AI mendeteksi berkas ini sebagai dokumen persuratan dan otomatis mencatatnya ke arsip DKC:\n\n` +
+              `🏷️ *Kode Arsip:* \`${newSurat.kodeArsip}\`\n` +
+              `📂 *Jenis Surat:* *${newSurat.jenis}*\n` +
+              `🔢 *No. Surat:* \`${newSurat.nomorSurat}\`\n` +
+              `📅 *Tanggal:* ${newSurat.tanggalSurat}\n` +
+              `🏢 *Pengirim:* ${newSurat.pengirim}\n` +
+              `🎯 *Tujuan:* ${newSurat.tujuan}\n` +
+              `📋 *Perihal:* *${newSurat.perihal}*\n` +
+              `🏷️ *Kategori & Sifat:* ${newSurat.kategori} (${newSurat.sifat})\n` +
+              (newSurat.ringkasan && newSurat.ringkasan !== '-' ? `📝 *Ringkasan:* _${newSurat.ringkasan}_\n` : '') +
+              (driveLink ? `\n🔗 [Buka Berkas di Google Drive](${driveLink})\n\n` : '\n') +
+              `_Data otomatis tersimpan di tab Google Sheets **${SHEET_SURAT}**._`,
+            { parse_mode: 'Markdown', reply_markup: keyboard, link_preview_options: { is_disabled: true } }
+          );
+          return;
+        }
       }
 
       if (driveLink) {
@@ -4139,16 +4147,19 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
       parsed.noteLink = driveLink;
     }
 
-    // === Cek apakah foto ini cocok dengan transaksi yang SUDAH ADA di Google Sheets yang belum ada fotonya ===
+    // === Cek apakah foto ini cocok dengan transaksi teks HARI INI pada buku aktif yang belum ada fotonya ===
     // Menghindari duplikasi transaksi jika pengguna mencatat teks terlebih dahulu baru mengirimkan fotonya
-    const matchExisting = await findMatchingTransactionRowAcrossBooks(activeBook, {
+    const todayStr = getLocalTodayDateString();
+    const matchExisting = await findMatchingTransactionRow(activeBook, {
       amount: parsed.amount,
       description: parsed.description,
-      date: parsed.date,
+      date: todayStr,
+      todayOnly: true,
     });
 
-    if (matchExisting && !matchExisting.item.hasPhoto) {
-      const { item: matchingRow, bookName: targetBook } = matchExisting;
+    if (matchExisting && !matchExisting.hasPhoto) {
+      const matchingRow = matchExisting;
+      const targetBook = activeBook;
       if (driveLink) {
         await updateTransactionNoteLink(matchingRow.rowNumber, driveLink, targetBook);
       }

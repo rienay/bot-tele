@@ -19,7 +19,7 @@ export function getLocalTodayDateString(date: Date = new Date()): string {
   }).format(date);
 }
 
-const GEMINI_MODELS = ['gemini-3.5-flash-lite', 'gemini-3.8-flash'];
+const GEMINI_MODELS = ['gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite'];
 
 /**
  * Memanggil Gemini dengan fallback berantai antar model (gemini-3.6-flash -> gemini-3.5-flash -> gemini-3.5-flash-lite)

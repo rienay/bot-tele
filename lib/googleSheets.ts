@@ -963,6 +963,7 @@ export async function findMatchingTransactionRow(
     amount?: number;
     description?: string;
     date?: string;
+    todayOnly?: boolean;
   }
 ): Promise<RecentTransactionItem | null> {
   await ensureHeaderRow(sheetName);
@@ -997,6 +998,15 @@ export async function findMatchingTransactionRow(
       const link = String(noteLinkRaw || '').trim();
       const hasPhoto = link.startsWith('http://') || link.startsWith('https://');
 
+      // Filter jika hanya mencari transaksi hari ini
+      if (criteria.todayOnly) {
+        const todayDate = criteria.date || new Date().toISOString().split('T')[0];
+        const rowDateClean = String(tglRaw || '').replace(/^'/, '').trim();
+        if (rowDateClean !== todayDate && !rowDateClean.startsWith(todayDate)) {
+          continue; // Bukan transaksi hari ini, lewati
+        }
+      }
+
       let currentScore = 0;
 
       // 1. Cek kecocokan nominal jika disediakan
@@ -1021,12 +1031,24 @@ export async function findMatchingTransactionRow(
           currentScore += 40;
         } else if (matchScore > 0) {
           currentScore += Math.min(35, matchScore * 10);
+        } else if (cleanRow.length > 3 && words.length > 0) {
+          // Jika kedua pihak punya deskripsi namun tidak ada kata yang cocok (misal 'Sarung keris' vs 'Beli bensin'),
+          // kurangi skor agar tidak salah menautkan transaksi yang berbeda jenis
+          currentScore -= 40;
         }
       }
 
-      // 3. Prioritas tinggi untuk transaksi yang BELUM punya foto
+      // 3. Cek tanggal jika disediakan
+      if (criteria.date) {
+        const rowDateClean = String(tglRaw || '').replace(/^'/, '').trim();
+        if (rowDateClean === criteria.date || rowDateClean.startsWith(criteria.date)) {
+          currentScore += 20;
+        }
+      }
+
+      // 4. Prioritas untuk transaksi yang BELUM punya foto
       if (!hasPhoto) {
-        currentScore += 30;
+        currentScore += 15;
       }
 
       const item: RecentTransactionItem = {
@@ -1041,12 +1063,13 @@ export async function findMatchingTransactionRow(
         createdAt: String(waktuRaw || '-'),
       };
 
-      // Jika menemukan transaksi tanpa foto yang cocok persis nominal & deskripsi, langsung gunakan
+      // Jika menemukan transaksi tanpa foto yang cocok kuat (nominal + deskripsi/tanggal), langsung gunakan
       if (!hasPhoto && currentScore >= 80) {
         return item;
       }
 
-      if (currentScore > highestScore) {
+      // Minimal skor 70 agar dianggap cocok (tidak boleh hanya nominal sama tapi beda deskripsi)
+      if (currentScore >= 70 && currentScore > highestScore) {
         highestScore = currentScore;
         bestCandidate = item;
       }
