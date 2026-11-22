@@ -204,3 +204,123 @@ export async function testDriveUpload(): Promise<{ success: boolean; message: st
   }
 }
 
+/**
+ * Mengekstrak ID file Google Drive dari URL atau string
+ */
+export function extractDriveFileId(rawUrlOrId?: string): string {
+  if (!rawUrlOrId) return '';
+  const trimmed = rawUrlOrId.trim();
+  const matchFile = trimmed.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+  if (matchFile) return matchFile[1];
+  const matchId = trimmed.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+  if (matchId) return matchId[1];
+  const matchDirect = trimmed.match(/^([a-zA-Z0-9_-]{20,})$/);
+  if (matchDirect) return matchDirect[1];
+  return '';
+}
+
+export interface DriveFileResult {
+  id: string;
+  name: string;
+  mimeType: string;
+  webViewLink: string;
+  size?: string | null;
+  createdTime?: string | null;
+}
+
+/**
+ * Mencari berkas langsung di Google Drive berdasarkan kata kunci
+ */
+export async function searchDriveFiles(query: string): Promise<DriveFileResult[]> {
+  try {
+    const auth = getGoogleAuth();
+    const drive = google.drive({ version: 'v3', auth });
+    const folderId = extractFolderId(process.env.GOOGLE_DRIVE_FOLDER_ID);
+
+    const words = query
+      .replace(/['"\\]/g, '')
+      .trim()
+      .split(/\s+/)
+      .filter((w) => w.length >= 2);
+
+    if (words.length === 0) return [];
+
+    const clauses = words.slice(0, 3).map((w) => `name contains '${w}'`);
+    const nameQuery = clauses.join(' and ');
+
+    const q = folderId
+      ? `'${folderId}' in parents and (${nameQuery}) and trashed = false`
+      : `(${nameQuery}) and trashed = false`;
+
+    const res = await drive.files.list({
+      q,
+      fields: 'files(id, name, mimeType, webViewLink, createdTime, size)',
+      pageSize: 10,
+      supportsAllDrives: true,
+      includeItemsFromAllDrives: true,
+    });
+
+    return (res.data.files || []).map((f) => ({
+      id: f.id || '',
+      name: f.name || 'Dokumen Tanpa Nama',
+      mimeType: f.mimeType || 'application/octet-stream',
+      webViewLink: f.webViewLink || `https://drive.google.com/file/d/${f.id}/view`,
+      size: f.size,
+      createdTime: f.createdTime,
+    }));
+  } catch (err) {
+    console.warn('Gagal search drive files:', err);
+    return [];
+  }
+}
+
+/**
+ * Mengunduh berkas dari Google Drive menjadi Buffer untuk dikirimkan langsung ke chat Telegram
+ */
+export async function downloadDriveFile(
+  fileIdOrUrl: string
+): Promise<{ buffer: Buffer; fileName: string; mimeType: string } | null> {
+  const fileId = extractDriveFileId(fileIdOrUrl);
+  if (!fileId) return null;
+
+  try {
+    const auth = getGoogleAuth();
+    const drive = google.drive({ version: 'v3', auth });
+
+    const meta = await drive.files.get({
+      fileId,
+      fields: 'name, mimeType, size',
+      supportsAllDrives: true,
+    });
+
+    const fileName = meta.data.name || `dokumen_${fileId}.pdf`;
+    const mimeType = meta.data.mimeType || 'application/pdf';
+
+    // Jika ini adalah Google Docs native, export ke PDF
+    if (mimeType.includes('vnd.google-apps.document')) {
+      const exportRes = await drive.files.export(
+        { fileId, mimeType: 'application/pdf' },
+        { responseType: 'arraybuffer' }
+      );
+      const buffer = Buffer.from(exportRes.data as ArrayBuffer);
+      return {
+        buffer,
+        fileName: fileName.endsWith('.pdf') ? fileName : `${fileName}.pdf`,
+        mimeType: 'application/pdf',
+      };
+    }
+
+    const res = await drive.files.get(
+      { fileId, alt: 'media', supportsAllDrives: true },
+      { responseType: 'arraybuffer' }
+    );
+    const buffer = Buffer.from(res.data as ArrayBuffer);
+
+    return { buffer, fileName, mimeType };
+  } catch (err: any) {
+    console.warn(`Gagal download file drive (${fileId}):`, err?.message || err);
+    return null;
+  }
+}
+
+

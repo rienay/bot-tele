@@ -1,6 +1,7 @@
 import { google } from 'googleapis';
 import { getGoogleAuth } from './googleAuth';
 import { formatDriveImageUrl } from './inventaris';
+import { searchDriveFiles } from './googleDrive';
 
 export const SHEET_SURAT = 'Surat_DKC';
 
@@ -69,9 +70,9 @@ export interface SuratStats {
 }
 
 function getSpreadsheetId(): string {
-  const id = process.env.GOOGLE_SPREADSHEET_ID;
+  const id = process.env.GOOGLE_SHEET_ID || process.env.GOOGLE_SPREADSHEET_ID;
   if (!id) {
-    throw new Error('GOOGLE_SPREADSHEET_ID belum dikonfigurasi di file .env');
+    throw new Error('GOOGLE_SHEET_ID belum dikonfigurasi di file .env');
   }
   return id;
 }
@@ -392,3 +393,152 @@ export async function getSuratStats(): Promise<SuratStats> {
     bulanIniKeluar,
   };
 }
+
+export interface SuratSearchResult {
+  id: string;
+  source: 'sheet' | 'drive';
+  kodeArsip?: string;
+  jenis: 'Surat Masuk' | 'Surat Keluar' | 'Berkas Drive';
+  nomorSurat: string;
+  tanggalSurat: string;
+  tanggalDiterima?: string;
+  pengirim: string;
+  tujuan: string;
+  perihal: string;
+  kategori: string;
+  sifat: string;
+  ringkasan: string;
+  berkas: string;
+  displayBerkas?: string;
+  pic?: string;
+  score: number;
+}
+
+/**
+ * Mencari surat dan berkas di Google Sheets & Google Drive berdasarkan kata kunci
+ */
+export async function cariSurat(rawQuery: string): Promise<SuratSearchResult[]> {
+  const query = rawQuery.trim().toLowerCase();
+  if (!query) return [];
+
+  const queryTokens = query
+    .replace(/[^a-z0-9/.-]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length > 1);
+
+  const expandedTokens = new Set<string>();
+  queryTokens.forEach((t) => {
+    expandedTokens.add(t);
+    if (t === 'ijin') expandedTokens.add('izin');
+    if (t === 'izin') expandedTokens.add('ijin');
+    if (t === 'ortu') {
+      expandedTokens.add('orang');
+      expandedTokens.add('tua');
+      expandedTokens.add('wali');
+    }
+    if (t === 'dispensasi') expandedTokens.add('permohonan');
+  });
+
+  const allItems = await getAllSurat();
+  const results: SuratSearchResult[] = [];
+  const registeredDriveIds = new Set<string>();
+
+  for (const it of allItems) {
+    let score = 0;
+    const perihalLower = it.perihal.toLowerCase();
+    const noLower = it.nomorSurat.toLowerCase();
+    const kodeLower = it.kodeArsip.toLowerCase();
+    const ringkasanLower = it.ringkasan.toLowerCase();
+    const pengirimLower = it.pengirim.toLowerCase();
+    const tujuanLower = it.tujuan.toLowerCase();
+    const kategoriLower = it.kategori.toLowerCase();
+
+    if (it.berkas) {
+      const match = it.berkas.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+      if (match) registeredDriveIds.add(match[1]);
+    }
+
+    // 1. Cocok persis seluruh query
+    if (perihalLower.includes(query)) score += 80;
+    if (noLower.includes(query)) score += 90;
+    if (kodeLower.includes(query)) score += 100;
+    if (ringkasanLower.includes(query)) score += 50;
+
+    const stopWords = new Set(['surat', 'dan', 'di', 'ke', 'dari', 'tentang', 'untuk', 'yang']);
+    const hasMeaningfulTokens = Array.from(expandedTokens).some((t) => !stopWords.has(t) && t.length > 2);
+
+    // 2. Cocok per token
+    for (const token of expandedTokens) {
+      if (token.length <= 2) continue;
+      if (hasMeaningfulTokens && stopWords.has(token)) continue;
+
+      if (perihalLower.includes(token)) score += 35;
+      if (noLower.includes(token)) score += 35;
+      if (kodeLower.includes(token)) score += 40;
+      if (ringkasanLower.includes(token)) score += 20;
+      if (pengirimLower.includes(token) || tujuanLower.includes(token)) score += 20;
+      if (kategoriLower.includes(token)) score += 15;
+    }
+
+    if (score >= 30) {
+      results.push({
+        id: it.kodeArsip,
+        source: 'sheet',
+        kodeArsip: it.kodeArsip,
+        jenis: it.jenis,
+        nomorSurat: it.nomorSurat,
+        tanggalSurat: it.tanggalSurat,
+        tanggalDiterima: it.tanggalDiterima,
+        pengirim: it.pengirim,
+        tujuan: it.tujuan,
+        perihal: it.perihal,
+        kategori: it.kategori,
+        sifat: it.sifat,
+        ringkasan: it.ringkasan,
+        berkas: it.berkas,
+        displayBerkas: it.displayBerkas,
+        pic: it.pic,
+        score,
+      });
+    }
+  }
+
+  // 3. Cari juga berkas langsung di Google Drive
+  try {
+    const driveFiles = await searchDriveFiles(query);
+    for (const df of driveFiles) {
+      if (registeredDriveIds.has(df.id)) continue;
+
+      let driveScore = 30;
+      const dfName = df.name.toLowerCase();
+      if (dfName.includes(query)) driveScore += 40;
+      for (const token of expandedTokens) {
+        if (token.length > 2 && dfName.includes(token)) driveScore += 20;
+      }
+
+      results.push({
+        id: df.id,
+        source: 'drive',
+        jenis: 'Berkas Drive',
+        nomorSurat: '-',
+        tanggalSurat: df.createdTime ? df.createdTime.slice(0, 10) : '-',
+        pengirim: 'Google Drive DKC',
+        tujuan: 'DKC Cilacap',
+        perihal: df.name,
+        kategori: 'Berkas Drive',
+        sifat: 'Biasa',
+        ringkasan: `Berkas tersimpan di Google Drive`,
+        berkas: df.webViewLink,
+        displayBerkas: df.webViewLink,
+        pic: 'Google Drive',
+        score: driveScore,
+      });
+    }
+  } catch (driveErr) {
+    console.warn('Gagal mencari berkas di Google Drive:', driveErr);
+  }
+
+  results.sort((a, b) => b.score - a.score);
+  return results.slice(0, 10);
+}
+

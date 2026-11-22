@@ -45,11 +45,13 @@ import {
   getAllSurat,
   getSuratStats,
   tambahSurat,
+  cariSurat,
+  SuratSearchResult,
   SuratItem,
   JenisSurat,
   SHEET_SURAT,
 } from './surat';
-import { uploadReceiptToDrive, getDriveConfigStatus, testDriveUpload } from './googleDrive';
+import { uploadReceiptToDrive, getDriveConfigStatus, testDriveUpload, downloadDriveFile } from './googleDrive';
 import { formatPrivateKey, getGoogleAuth } from './googleAuth';
 import { generateNotaPdf, HARGA_PER_KG, rupiahFormat } from './generateNota';
 import { ExpenseDetail, UserRole } from './types';
@@ -134,6 +136,16 @@ interface ReuploadState {
 }
 const reuploadStates = new Map<number, ReuploadState>();
 
+// State: Sesi pencarian surat via /cari
+const cariSuratStates = new Map<number, boolean>();
+
+interface SuratSearchSession {
+  query: string;
+  results: SuratSearchResult[];
+  timestamp: number;
+}
+const suratSearchSessions = new Map<number, SuratSearchSession>();
+
 function formatRupiah(amount: number): string {
   return new Intl.NumberFormat('id-ID', {
     style: 'currency',
@@ -169,6 +181,7 @@ async function syncBotCommands(api: any) {
       { command: 'linkuang', description: 'Link website keuangan transparan' },
       { command: 'linkinventaris', description: 'Link tabel web inventaris barang' },
       { command: 'surat', description: 'Agenda surat masuk & keluar DKC' },
+      { command: 'cari', description: 'Cari surat & download berkas Drive' },
       { command: 'linksurat', description: 'Link tabel web persuratan DKC' },
     ];
 
@@ -404,6 +417,7 @@ bot.command(['start', 'help'], async (ctx) => {
       `• /linkinventaris — *Tabel Web Inventaris* (tampilan tabel Word putih-biru)\n\n` +
       `📑 *Menu Persuratan DKC Cilacap:*\n` +
       `• /surat — *Arsip Persuratan* (Surat Masuk & Surat Keluar)\n` +
+      `• /cari [kata kunci] — *Cari Surat & Download Berkas* (contoh: \`/cari surat ijin orang tua\`)\n` +
       `• /suratmasuk — *Daftar Surat Masuk* terbaru\n` +
       `• /suratkeluar — *Daftar Surat Keluar* terbaru\n` +
       `• /linksurat — *Tabel Web Persuratan* (agenda surat resmi DKC)\n` +
@@ -2797,6 +2811,8 @@ async function handleMenuSurat(ctx: any) {
       .text(`📥 Surat Masuk (${stats.totalMasuk})`, 'surat_masuk')
       .text(`📤 Surat Keluar (${stats.totalKeluar})`, 'surat_keluar')
       .row()
+      .text('🔍 Cari Surat / Berkas Drive', 'surat_cari_prompt')
+      .row()
       .url('🌐 Buka Tabel Web Persuratan', WEB_SURAT_URL);
 
     await ctx.reply(
@@ -2807,6 +2823,9 @@ async function handleMenuSurat(ctx: any) {
         `• *Surat Masuk:* ${stats.totalMasuk} Surat (Bulan ini: ${stats.bulanIniMasuk})\n` +
         `• *Surat Keluar:* ${stats.totalKeluar} Surat (Bulan ini: ${stats.bulanIniKeluar})\n` +
         `• *Sifat Penting / Segera:* ${stats.totalPenting} Surat\n\n` +
+        `🔍 *Fitur Pencarian Surat & Berkas Drive:*\n` +
+        `Ketik /cari untuk mencari surat atau langsung dengan kata kunci:\n` +
+        `Contoh: \`/cari surat ijin orang tua\`, \`/cari dispensasi\`\n\n` +
         `💡 *Cara Cepat Catat / Arsipkan Surat:*\n` +
         `Cukup kirimkan *Foto Dokumen*, berkas *PDF*, atau berkas *Word (.docx)* surat ke chat bot ini.\n` +
         `AI akan otomatis membaca Nomor Surat, Perihal, Pengirim, dan mengunggahnya ke Google Drive! ✨`,
@@ -3033,6 +3052,324 @@ bot.callbackQuery('surat_masuk', async (ctx) => {
 bot.callbackQuery('surat_keluar', async (ctx) => {
   await ctx.answerCallbackQuery();
   await handleListSurat(ctx, 'Surat Keluar');
+});
+
+bot.command(['cari', 'carisurat', 'searchsurat'], async (ctx) => {
+  const text = ctx.message?.text || '';
+  const query = text.replace(/^\/(cari|carisurat|searchsurat)(?:@\w+)?/i, '').trim();
+  if (query) {
+    await handleCariSurat(ctx, query);
+  } else {
+    await handlePromptCariSurat(ctx);
+  }
+});
+
+/**
+ * Meminta pengguna memasukkan kata kunci pencarian surat
+ */
+async function handlePromptCariSurat(ctx: any) {
+  const chatId = ctx.chat?.id;
+  if (chatId) cariSuratStates.set(chatId, true);
+
+  const keyboard = new InlineKeyboard()
+    .text('❌ Batal', 'surat_cari_batal')
+    .url('🌐 Buka Tabel Web', WEB_SURAT_URL);
+
+  await ctx.reply(
+    `🔍 *Pencarian Arsip Persuratan & Berkas DKC*\n\n` +
+      `Silakan ketik kata kunci surat yang ingin dicari:\n` +
+      `_(contoh: \`surat ijin orang tua\`, \`dispensasi\`, \`mandat raimuna\`, \`undangan kwarcab\`, atau nomor surat)_\n\n` +
+      `💡 _Sistem otomatis mencari di data Google Sheets dan berkas dokumen Google Drive._\n` +
+      `_Ketik /batal jika ingin membatalkan._`,
+    { parse_mode: 'Markdown', reply_markup: keyboard }
+  );
+}
+
+/**
+ * Menjalankan pencarian surat & menampilkan daftar bernomor sesuai kata kunci
+ */
+async function handleCariSurat(ctx: any, query: string) {
+  const chatId = ctx.chat?.id;
+  await ctx.replyWithChatAction('typing');
+
+  try {
+    const results = await cariSurat(query);
+    if (chatId) {
+      suratSearchSessions.set(chatId, {
+        query,
+        results,
+        timestamp: Date.now(),
+      });
+    }
+
+    if (results.length === 0) {
+      const keyboard = new InlineKeyboard()
+        .text('🔍 Cari Kata Kunci Lain', 'surat_cari_prompt')
+        .row()
+        .url('🌐 Buka Web Persuratan', WEB_SURAT_URL)
+        .text('🔙 Menu Persuratan', 'surat_main');
+
+      await ctx.reply(
+        `🔍 *Hasil Pencarian Surat: "${query}"*\n\n` +
+          `❌ Tidak ditemukan surat atau berkas dokumen yang cocok dengan kata kunci tersebut.\n\n` +
+          `💡 *Tips Pencarian:*\n` +
+          `• Gunakan kata kunci yang lebih ringkas (misal: \`ijin\`, \`izin\`, \`dispensasi\`, \`mandat\`, \`undangan\`).\n` +
+          `• Cari berdasarkan nomor surat (misal: \`045\` atau \`11.01\`).\n` +
+          `• Seluruh arsip lengkap juga dapat dilihat di tabel web:`,
+        { parse_mode: 'Markdown', reply_markup: keyboard }
+      );
+      return;
+    }
+
+    let text =
+      `🔍 *Hasil Pencarian Surat: "${query}"*\n` +
+      `Ditemukan *${results.length} surat/berkas* yang sesuai:\n\n`;
+
+    results.forEach((it, idx) => {
+      const numIcon =
+        idx === 0
+          ? '1️⃣'
+          : idx === 1
+          ? '2️⃣'
+          : idx === 2
+          ? '3️⃣'
+          : idx === 3
+          ? '4️⃣'
+          : idx === 4
+          ? '5️⃣'
+          : `${idx + 1}.`;
+      const badge =
+        it.source === 'drive'
+          ? '📁 Berkas Google Drive'
+          : it.jenis === 'Surat Masuk'
+          ? '📥 Surat Masuk'
+          : '📤 Surat Keluar';
+      const kode = it.kodeArsip ? `\`[${it.kodeArsip}]\` ` : '';
+      const noStr =
+        it.nomorSurat && it.nomorSurat !== '-' ? `\n   🔢 No: \`${it.nomorSurat}\`` : '';
+      const tanggalStr =
+        it.tanggalSurat && it.tanggalSurat !== '-' ? ` | 📅 ${it.tanggalSurat}` : '';
+      const pihak =
+        it.pengirim && it.pengirim !== '-' && it.pengirim !== 'Google Drive DKC'
+          ? `\n   🏢 Pengirim: ${it.pengirim}`
+          : '';
+
+      text += `${numIcon} *${kode}${it.perihal}*\n   🏷️ ${badge}${tanggalStr}${noStr}${pihak}\n\n`;
+    });
+
+    text +=
+      `━━━━━━━━━━━━━━━━━━━━━\n` +
+      `👇 *Pilih nomor surat di bawah untuk melihat detail & mengunduh/membuka berkas:*`;
+
+    const keyboard = new InlineKeyboard();
+    results.forEach((_, idx) => {
+      keyboard.text(`📄 Surat ${idx + 1}`, `surat_pick:${idx}`);
+      if ((idx + 1) % 3 === 0) keyboard.row();
+    });
+
+    if (results.length % 3 !== 0) keyboard.row();
+    keyboard.text('🔍 Cari Kata Kunci Lain', 'surat_cari_prompt');
+    keyboard.url('🌐 Buka Tabel Web', WEB_SURAT_URL);
+
+    await ctx.reply(text, {
+      parse_mode: 'Markdown',
+      reply_markup: keyboard,
+      link_preview_options: { is_disabled: true },
+    });
+  } catch (err: any) {
+    console.error('Error saat mencari surat:', err);
+    await ctx.reply(`❌ Terjadi kendala saat mencari surat: ${err?.message || err}`);
+  }
+}
+
+bot.callbackQuery('surat_cari_prompt', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await handlePromptCariSurat(ctx);
+});
+
+bot.callbackQuery('surat_cari_batal', async (ctx) => {
+  await ctx.answerCallbackQuery('Pencarian dibatalkan');
+  const chatId = ctx.chat?.id;
+  if (chatId) cariSuratStates.delete(chatId);
+  await ctx.reply('❌ Pencarian surat dibatalkan. Ketik /surat atau /cari kapan saja saat dibutuhkan.');
+});
+
+bot.callbackQuery('surat_back_list', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const chatId = ctx.chat?.id;
+  const session = chatId ? suratSearchSessions.get(chatId) : null;
+  if (!session || session.results.length === 0) {
+    await handlePromptCariSurat(ctx);
+    return;
+  }
+
+  const results = session.results;
+  let text =
+    `🔍 *Hasil Pencarian Surat: "${session.query}"*\n` +
+    `Ditemukan *${results.length} surat/berkas* yang sesuai:\n\n`;
+
+  results.forEach((it, idx) => {
+    const numIcon =
+      idx === 0
+        ? '1️⃣'
+        : idx === 1
+        ? '2️⃣'
+        : idx === 2
+        ? '3️⃣'
+        : idx === 3
+        ? '4️⃣'
+        : idx === 4
+        ? '5️⃣'
+        : `${idx + 1}.`;
+    const badge =
+      it.source === 'drive'
+        ? '📁 Berkas Google Drive'
+        : it.jenis === 'Surat Masuk'
+        ? '📥 Surat Masuk'
+        : '📤 Surat Keluar';
+    const kode = it.kodeArsip ? `\`[${it.kodeArsip}]\` ` : '';
+    const noStr =
+      it.nomorSurat && it.nomorSurat !== '-' ? `\n   🔢 No: \`${it.nomorSurat}\`` : '';
+    const tanggalStr =
+      it.tanggalSurat && it.tanggalSurat !== '-' ? ` | 📅 ${it.tanggalSurat}` : '';
+    const pihak =
+      it.pengirim && it.pengirim !== '-' && it.pengirim !== 'Google Drive DKC'
+        ? `\n   🏢 Pengirim: ${it.pengirim}`
+        : '';
+
+    text += `${numIcon} *${kode}${it.perihal}*\n   🏷️ ${badge}${tanggalStr}${noStr}${pihak}\n\n`;
+  });
+
+  text +=
+    `━━━━━━━━━━━━━━━━━━━━━\n` +
+    `👇 *Pilih nomor surat di bawah untuk melihat detail & mengunduh/membuka berkas:*`;
+
+  const keyboard = new InlineKeyboard();
+  results.forEach((_, idx) => {
+    keyboard.text(`📄 Surat ${idx + 1}`, `surat_pick:${idx}`);
+    if ((idx + 1) % 3 === 0) keyboard.row();
+  });
+
+  if (results.length % 3 !== 0) keyboard.row();
+  keyboard.text('🔍 Cari Kata Kunci Lain', 'surat_cari_prompt');
+  keyboard.url('🌐 Buka Tabel Web', WEB_SURAT_URL);
+
+  await ctx.reply(text, {
+    parse_mode: 'Markdown',
+    reply_markup: keyboard,
+    link_preview_options: { is_disabled: true },
+  });
+});
+
+bot.callbackQuery(/^surat_pick:(\d+)$/, async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const chatId = ctx.chat?.id;
+  const index = parseInt(ctx.match[1], 10);
+  const session = chatId ? suratSearchSessions.get(chatId) : null;
+
+  if (!session || !session.results[index]) {
+    await ctx.reply(
+      '⚠️ Sesi pencarian telah kedaluwarsa. Silakan ketik /cari untuk mencari kembali.'
+    );
+    return;
+  }
+
+  const it = session.results[index];
+  const badge = it.source === 'drive' ? '📁 Berkas Google Drive' : it.jenis;
+
+  const detailText =
+    `📑 *Rincian Dokumen Surat #${index + 1}*\n\n` +
+    (it.kodeArsip ? `🏷️ *Kode Arsip:* \`${it.kodeArsip}\`\n` : '') +
+    `📂 *Jenis Dokumen:* *${badge}*\n` +
+    (it.nomorSurat && it.nomorSurat !== '-' ? `🔢 *Nomor Surat:* \`${it.nomorSurat}\`\n` : '') +
+    (it.tanggalSurat && it.tanggalSurat !== '-' ? `📅 *Tanggal Surat:* ${it.tanggalSurat}\n` : '') +
+    (it.tanggalDiterima && it.tanggalDiterima !== '-' ? `📥 *Tanggal Diterima:* ${it.tanggalDiterima}\n` : '') +
+    (it.pengirim && it.pengirim !== '-' ? `🏢 *Pengirim / Asal:* ${it.pengirim}\n` : '') +
+    (it.tujuan && it.tujuan !== '-' ? `🎯 *Tujuan / Penerima:* ${it.tujuan}\n` : '') +
+    `📋 *Perihal:* *${it.perihal}*\n` +
+    (it.kategori && it.kategori !== '-' ? `🏷️ *Kategori & Sifat:* ${it.kategori} (${it.sifat || 'Biasa'})\n` : '') +
+    (it.ringkasan && it.ringkasan !== '-' ? `📝 *Ringkasan:* _${it.ringkasan}_\n` : '') +
+    (it.pic && it.pic !== '-' ? `👤 *PIC Input:* ${it.pic}\n` : '') +
+    (it.berkas ? `\n🔗 *Status Berkas:* [Tersedia di Google Drive](${it.berkas})` : '\n⚠️ *Status Berkas:* _Tautan berkas belum tersedia_');
+
+  const keyboard = new InlineKeyboard();
+  if (it.berkas) {
+    keyboard.url('📥 Buka di Google Drive', it.berkas);
+    keyboard.row();
+    keyboard.text('📤 Kirim Dokumen ke Chat Telegram', `surat_sendfile:${index}`);
+    keyboard.row();
+  }
+  keyboard.text('⬅️ Kembali ke Hasil', 'surat_back_list');
+  keyboard.text('🔍 Cari Surat Lain', 'surat_cari_prompt');
+
+  await ctx.reply(detailText, {
+    parse_mode: 'Markdown',
+    reply_markup: keyboard,
+    link_preview_options: { is_disabled: true },
+  });
+});
+
+bot.callbackQuery(/^surat_sendfile:(\d+)$/, async (ctx) => {
+  const chatId = ctx.chat?.id;
+  const index = parseInt(ctx.match[1], 10);
+  const session = chatId ? suratSearchSessions.get(chatId) : null;
+
+  if (!session || !session.results[index]) {
+    await ctx.answerCallbackQuery('Sesi kedaluwarsa. Silakan ketik /cari kembali.');
+    return;
+  }
+
+  const it = session.results[index];
+  if (!it.berkas) {
+    await ctx.answerCallbackQuery('Berkas tidak tersedia.');
+    return;
+  }
+
+  await ctx.answerCallbackQuery('Mengunduh berkas surat...');
+  await ctx.replyWithChatAction('upload_document');
+
+  const waitMsg = await ctx.reply(
+    `⏳ *Mengunduh berkas surat dari Google Drive & mengirimkan ke chat Telegram...*\n` +
+      `_Mohon tunggu sebentar..._`,
+    { parse_mode: 'Markdown' }
+  );
+
+  try {
+    const fileData = await downloadDriveFile(it.berkas);
+    if (fileData) {
+      const safeTitle = it.perihal.replace(/[/\\?%*:|"<>]/g, '_');
+      const ext = fileData.fileName.includes('.') ? fileData.fileName.split('.').pop() : 'pdf';
+      const sendFileName = `${safeTitle.slice(0, 40)}.${ext}`;
+
+      await ctx.replyWithDocument(new InputFile(fileData.buffer, sendFileName), {
+        caption:
+          `📄 *Berkas Surat:* *${it.perihal}*\n` +
+          (it.nomorSurat && it.nomorSurat !== '-' ? `🔢 *No. Surat:* \`${it.nomorSurat}\`\n` : '') +
+          (it.kodeArsip ? `🏷️ *Kode Arsip:* \`${it.kodeArsip}\`\n` : '') +
+          `🔗 [Buka di Google Drive](${it.berkas})`,
+        parse_mode: 'Markdown',
+      });
+
+      try {
+        if (chatId) await ctx.api.deleteMessage(chatId, waitMsg.message_id);
+      } catch {}
+    } else {
+      const keyboard = new InlineKeyboard().url('🌐 Buka di Google Drive', it.berkas);
+      await ctx.reply(
+        `ℹ️ Berkas tidak dapat diunduh otomatis ke bot karena pembatasan hak akses Drive pribadi.\n` +
+          `Silakan buka dan download langsung melalui tautan Google Drive di bawah ini:`,
+        { reply_markup: keyboard }
+      );
+    }
+  } catch (dlErr: any) {
+    console.error('Gagal mengunduh file Drive:', dlErr);
+    const keyboard = new InlineKeyboard().url('🌐 Buka di Google Drive', it.berkas);
+    await ctx.reply(
+      `⚠️ Terjadi kendala saat mengunduh berkas: ${dlErr?.message || dlErr}\n` +
+        `Silakan buka langsung dari Google Drive:`,
+      { reply_markup: keyboard }
+    );
+  }
 });
 
 
@@ -3392,6 +3729,18 @@ bot.on('message:text', async (ctx) => {
     return;
   }
 
+  // === 1.5 Cek apakah pengguna sedang dalam proses input kata kunci /cari surat ===
+  if (cariSuratStates.has(chatId)) {
+    if (text.toLowerCase() === 'batal' || text === '/batal') {
+      cariSuratStates.delete(chatId);
+      await ctx.reply('❌ Pencarian surat dibatalkan. Ketik /cari untuk memulai kembali.');
+      return;
+    }
+    cariSuratStates.delete(chatId);
+    await handleCariSurat(ctx, text);
+    return;
+  }
+
   // === 2. Cek apakah pengguna sedang dalam mode /nota ===
   if (notaStates.has(chatId)) {
     await processNotaStep(ctx, chatId, text);
@@ -3514,6 +3863,21 @@ bot.on('message:text', async (ctx) => {
         `👉 [${WEB_SURAT_URL}](${WEB_SURAT_URL})`,
       { parse_mode: 'Markdown', reply_markup: keyboard }
     );
+    return;
+  }
+
+  if (
+    textLower.startsWith('cari surat') ||
+    textLower.startsWith('carisurat') ||
+    textLower.startsWith('cari berkas') ||
+    textLower.startsWith('cari dokumen')
+  ) {
+    const q = text.replace(/^(cari\s*surat|carisurat|cari\s*berkas|cari\s*dokumen)/i, '').trim();
+    if (q) {
+      await handleCariSurat(ctx, q);
+    } else {
+      await handlePromptCariSurat(ctx);
+    }
     return;
   }
 
@@ -3657,6 +4021,9 @@ bot.on('message:text', async (ctx) => {
       'keluar',
       'linksurat',
       'websurat',
+      'cari',
+      'carisurat',
+      'searchsurat',
     ];
 
     if (!standardCmds.includes(rawCmd)) {
