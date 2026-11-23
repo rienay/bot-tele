@@ -17,6 +17,7 @@ export interface SuratItem {
   sifat: string;
   ringkasan: string;
   berkas: string;
+  berkasList?: string[];
   displayBerkas?: string;
   waktuInput: string;
   pic: string;
@@ -81,6 +82,7 @@ export default function SuratPage() {
   // File Upload & AI OCR State
   const [uploadingFile, setUploadingFile] = useState(false);
   const [filePreview, setFilePreview] = useState<string | null>(null);
+  const [multiPreviews, setMultiPreviews] = useState<Array<{ name: string; url: string; isImage: boolean }>>([]);
   const [uploadFileName, setUploadFileName] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [aiDetectedMsg, setAiDetectedMsg] = useState<string | null>(null);
@@ -204,6 +206,7 @@ export default function SuratPage() {
     setFormBerkas('');
     setFormPic('Staff DKC');
     setFilePreview(null);
+    setMultiPreviews([]);
     setUploadFileName(null);
     setUploadError(null);
     setAiDetectedMsg(null);
@@ -213,23 +216,30 @@ export default function SuratPage() {
   };
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
 
     setUploadError(null);
     setAiDetectedMsg(null);
-    setUploadFileName(file.name);
+    setUploadFileName(files.length === 1 ? files[0].name : `${files.length} Foto/Berkas Dokumen`);
     setUploadingFile(true);
 
-    if (file.type.startsWith('image/')) {
-      setFilePreview(URL.createObjectURL(file));
+    const previews = files.map((file, idx) => ({
+      name: file.name || `Halaman ${idx + 1}`,
+      url: file.type.startsWith('image/') ? URL.createObjectURL(file) : '',
+      isImage: file.type.startsWith('image/'),
+    }));
+    setMultiPreviews(previews);
+
+    if (previews.length > 0 && previews[0].url) {
+      setFilePreview(previews[0].url);
     } else {
       setFilePreview(null);
     }
 
     try {
       const fd = new FormData();
-      fd.append('file', file);
+      files.forEach((f) => fd.append('files', f));
       fd.append('caption', `Surat DKC Cilacap: ${formJenis}`);
 
       const res = await fetch('/api/surat/scan', {
@@ -241,7 +251,7 @@ export default function SuratPage() {
       if (json.success) {
         if (json.fileUrl) {
           setFormBerkas(json.fileUrl);
-          if (json.displayUrl && file.type.startsWith('image/')) {
+          if (json.displayUrl && files[0].type.startsWith('image/')) {
             setFilePreview(json.displayUrl);
           }
         }
@@ -260,7 +270,8 @@ export default function SuratPage() {
           if (p.sifat) setFormSifat(p.sifat);
           if (p.ringkasan && p.ringkasan !== '-') setFormRingkasan(p.ringkasan);
 
-          setAiDetectedMsg('AI berhasil membaca rincian surat & tersimpan di Google Drive!');
+          const countTxt = files.length > 1 ? `${files.length} halaman/foto surat` : 'dokumen surat';
+          setAiDetectedMsg(`AI berhasil membaca seluruh ${countTxt} & tersimpan di Google Drive!`);
         } else {
           setAiDetectedMsg('Berkas berhasil disimpan ke Google Drive. Silakan lengkapi formulir.');
         }
@@ -277,6 +288,7 @@ export default function SuratPage() {
 
   const handleRemoveFile = () => {
     setFilePreview(null);
+    setMultiPreviews([]);
     setUploadFileName(null);
     setFormBerkas('');
     setUploadError(null);
@@ -626,78 +638,228 @@ export default function SuratPage() {
           <div className="word-table-responsive-wrapper">
             <table className="word-table">
               <thead>
-                <tr>
-                  <th style={{ width: '45px', textAlign: 'center' }}>No</th>
-                  <th style={{ width: '70px', textAlign: 'center' }}>Berkas</th>
-                  <th style={{ width: '110px' }}>Kode Arsip</th>
-                  <th style={{ width: '120px' }}>Jenis</th>
-                  <th style={{ minWidth: '160px' }}>Nomor Surat</th>
-                  <th style={{ minWidth: '110px' }}>Tanggal</th>
-                  <th style={{ minWidth: '220px' }}>Perihal & Ringkasan</th>
-                  <th style={{ minWidth: '160px' }}>Pengirim / Asal</th>
-                  <th style={{ minWidth: '160px' }}>Tujuan / Penerima</th>
-                  <th style={{ minWidth: '110px' }}>Sifat & Kategori</th>
-                </tr>
+                {selectedJenis === 'Surat Masuk' ? (
+                  <tr>
+                    <th style={{ width: '45px', textAlign: 'center' }}>No</th>
+                    <th style={{ width: '80px', textAlign: 'center' }}>Berkas</th>
+                    <th style={{ width: '110px' }}>Kode Arsip</th>
+                    <th style={{ minWidth: '120px' }}>1. Tanggal Masuk</th>
+                    <th style={{ minWidth: '170px' }}>2. Asal Surat</th>
+                    <th style={{ minWidth: '160px' }}>3. No. Surat</th>
+                    <th style={{ minWidth: '110px' }}>4. Tanggal Surat</th>
+                    <th style={{ minWidth: '230px' }}>5. Perihal & Ringkasan</th>
+                    <th style={{ minWidth: '110px' }}>Sifat & Kategori</th>
+                  </tr>
+                ) : selectedJenis === 'Surat Keluar' ? (
+                  <tr>
+                    <th style={{ width: '45px', textAlign: 'center' }}>No</th>
+                    <th style={{ width: '80px', textAlign: 'center' }}>Berkas</th>
+                    <th style={{ width: '110px' }}>Kode Arsip</th>
+                    <th style={{ minWidth: '120px' }}>1. Tanggal Surat</th>
+                    <th style={{ minWidth: '160px' }}>2. No. Surat Keluar</th>
+                    <th style={{ minWidth: '170px' }}>3. Kepada</th>
+                    <th style={{ minWidth: '230px' }}>4. Perihal & Ringkasan</th>
+                    <th style={{ minWidth: '110px' }}>Sifat & Kategori</th>
+                  </tr>
+                ) : (
+                  <tr>
+                    <th style={{ width: '45px', textAlign: 'center' }}>No</th>
+                    <th style={{ width: '80px', textAlign: 'center' }}>Berkas</th>
+                    <th style={{ width: '110px' }}>Kode Arsip</th>
+                    <th style={{ width: '120px' }}>Jenis</th>
+                    <th style={{ minWidth: '160px' }}>Nomor Surat</th>
+                    <th style={{ minWidth: '110px' }}>Tanggal</th>
+                    <th style={{ minWidth: '220px' }}>Perihal & Ringkasan</th>
+                    <th style={{ minWidth: '160px' }}>Pengirim / Asal</th>
+                    <th style={{ minWidth: '160px' }}>Tujuan / Penerima</th>
+                    <th style={{ minWidth: '110px' }}>Sifat & Kategori</th>
+                  </tr>
+                )}
               </thead>
               <tbody>
                 {loading ? (
                   <tr>
-                    <td colSpan={10} className="text-center py-8 text-slate-500 font-medium">
+                    <td
+                      colSpan={selectedJenis === 'Surat Masuk' ? 9 : selectedJenis === 'Surat Keluar' ? 8 : 10}
+                      className="text-center py-8 text-slate-500 font-medium"
+                    >
                       Memuat arsip persuratan DKC...
                     </td>
                   </tr>
                 ) : filteredItems.length === 0 ? (
                   <tr>
-                    <td colSpan={10} className="text-center py-8 text-slate-500">
+                    <td
+                      colSpan={selectedJenis === 'Surat Masuk' ? 9 : selectedJenis === 'Surat Keluar' ? 8 : 10}
+                      className="text-center py-8 text-slate-500"
+                    >
                       Belum ada arsip surat yang sesuai dengan filter pencarian.
                     </td>
                   </tr>
                 ) : (
                   filteredItems.map((item, idx) => {
                     const isMasuk = item.jenis === 'Surat Masuk';
+                    const hasMultiFiles = item.berkasList && item.berkasList.length > 1;
+
+                    const renderBerkasCell = () => (
+                      <td style={{ textAlign: 'center' }}>
+                        {hasMultiFiles ? (
+                          <div className="flex flex-col gap-1 items-center">
+                            <span className="text-[11px] font-semibold text-sky-800 bg-sky-100 px-1.5 py-0.5 rounded border border-sky-300">
+                              {item.berkasList!.length} Foto
+                            </span>
+                            <div className="flex flex-wrap gap-1 justify-center max-w-[120px]">
+                              {item.berkasList!.map((url: string, i: number) => (
+                                <a
+                                  key={i}
+                                  href={url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-[10px] text-blue-700 hover:underline bg-slate-100 px-1 py-0.5 rounded border border-slate-200"
+                                  title={`Buka Halaman ${i + 1} di Google Drive`}
+                                >
+                                  H{i + 1}
+                                </a>
+                              ))}
+                            </div>
+                          </div>
+                        ) : item.berkas ? (
+                          <a
+                            href={item.berkas}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="word-drive-link"
+                            title="Buka Berkas Asli di Google Drive"
+                          >
+                            Buka
+                          </a>
+                        ) : (
+                          <span className="text-slate-400 text-xs">-</span>
+                        )}
+                      </td>
+                    );
+
+                    if (selectedJenis === 'Surat Masuk') {
+                      return (
+                        <tr key={item.kodeArsip + idx} className="word-table-row">
+                          <td style={{ textAlign: 'center', color: '#64748b', fontSize: '0.85rem' }}>
+                            {idx + 1}
+                          </td>
+                          {renderBerkasCell()}
+                          <td>
+                            <span className="word-code-pill font-mono">{item.kodeArsip}</span>
+                          </td>
+                          {/* 1. Tanggal Masuk */}
+                          <td>
+                            <div className="text-xs text-blue-900 font-semibold">
+                              {item.tanggalDiterima || item.tanggalSurat || '-'}
+                            </div>
+                          </td>
+                          {/* 2. Asal Surat */}
+                          <td>
+                            <div className="text-xs text-slate-900 font-semibold">{item.pengirim || '-'}</div>
+                          </td>
+                          {/* 3. No Surat */}
+                          <td>
+                            <div className="font-semibold text-slate-800 text-xs font-mono">
+                              {item.nomorSurat}
+                            </div>
+                          </td>
+                          {/* 4. Tanggal Surat */}
+                          <td>
+                            <div className="text-xs text-slate-700 font-medium">
+                              {item.tanggalSurat || '-'}
+                            </div>
+                          </td>
+                          {/* 5. Perihal & Ringkasan */}
+                          <td>
+                            <div className="font-bold text-slate-900 text-sm">{item.perihal}</div>
+                            {item.ringkasan && item.ringkasan !== '-' && (
+                              <div className="text-xs text-slate-500 mt-1 italic leading-relaxed">
+                                {item.ringkasan}
+                              </div>
+                            )}
+                          </td>
+                          {/* Sifat & Kategori */}
+                          <td>
+                            <div className="flex flex-col gap-1 items-start">
+                              <span className={`sifat-badge ${item.sifat.toLowerCase().replace(/\s+/g, '-')}`}>
+                                {item.sifat}
+                              </span>
+                              <span className="kategori-badge">{item.kategori}</span>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    }
+
+                    if (selectedJenis === 'Surat Keluar') {
+                      return (
+                        <tr key={item.kodeArsip + idx} className="word-table-row">
+                          <td style={{ textAlign: 'center', color: '#64748b', fontSize: '0.85rem' }}>
+                            {idx + 1}
+                          </td>
+                          {renderBerkasCell()}
+                          <td>
+                            <span className="word-code-pill font-mono">{item.kodeArsip}</span>
+                          </td>
+                          {/* 1. Tanggal Surat */}
+                          <td>
+                            <div className="text-xs text-blue-900 font-semibold">
+                              {item.tanggalSurat || '-'}
+                            </div>
+                          </td>
+                          {/* 2. No Surat Keluar */}
+                          <td>
+                            <div className="font-semibold text-slate-800 text-xs font-mono">
+                              {item.nomorSurat}
+                            </div>
+                          </td>
+                          {/* 3. Kepada */}
+                          <td>
+                            <div className="text-xs text-slate-900 font-semibold">{item.tujuan || '-'}</div>
+                          </td>
+                          {/* 4. Perihal & Ringkasan */}
+                          <td>
+                            <div className="font-bold text-slate-900 text-sm">{item.perihal}</div>
+                            {item.ringkasan && item.ringkasan !== '-' && (
+                              <div className="text-xs text-slate-500 mt-1 italic leading-relaxed">
+                                {item.ringkasan}
+                              </div>
+                            )}
+                          </td>
+                          {/* Sifat & Kategori */}
+                          <td>
+                            <div className="flex flex-col gap-1 items-start">
+                              <span className={`sifat-badge ${item.sifat.toLowerCase().replace(/\s+/g, '-')}`}>
+                                {item.sifat}
+                              </span>
+                              <span className="kategori-badge">{item.kategori}</span>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    }
+
+                    // Tampilan Semua (Default)
                     return (
                       <tr key={item.kodeArsip + idx} className="word-table-row">
                         <td style={{ textAlign: 'center', color: '#64748b', fontSize: '0.85rem' }}>
                           {idx + 1}
                         </td>
-
-                        {/* Berkas Drive */}
-                        <td style={{ textAlign: 'center' }}>
-                          {item.berkas ? (
-                            <a
-                              href={item.berkas}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="word-drive-link"
-                              title="Buka Berkas Asli di Google Drive"
-                            >
-                              Buka
-                            </a>
-                          ) : (
-                            <span className="text-slate-400 text-xs">-</span>
-                          )}
-                        </td>
-
-                        {/* Kode Arsip */}
+                        {renderBerkasCell()}
                         <td>
                           <span className="word-code-pill font-mono">{item.kodeArsip}</span>
                         </td>
-
-                        {/* Jenis Surat */}
                         <td>
                           <span className={`jenis-badge ${isMasuk ? 'masuk' : 'keluar'}`}>
                             {item.jenis}
                           </span>
                         </td>
-
-                        {/* Nomor Surat */}
                         <td>
                           <div className="font-semibold text-slate-800 text-xs font-mono">
                             {item.nomorSurat}
                           </div>
                         </td>
-
-                        {/* Tanggal */}
                         <td>
                           <div className="text-xs text-slate-700 font-medium">
                             {item.tanggalSurat || '-'}
@@ -708,8 +870,6 @@ export default function SuratPage() {
                             </div>
                           )}
                         </td>
-
-                        {/* Perihal & Ringkasan */}
                         <td>
                           <div className="font-bold text-slate-900 text-sm">{item.perihal}</div>
                           {item.ringkasan && item.ringkasan !== '-' && (
@@ -718,18 +878,12 @@ export default function SuratPage() {
                             </div>
                           )}
                         </td>
-
-                        {/* Pengirim */}
                         <td>
                           <div className="text-xs text-slate-800 font-medium">{item.pengirim}</div>
                         </td>
-
-                        {/* Tujuan */}
                         <td>
                           <div className="text-xs text-slate-800 font-medium">{item.tujuan}</div>
                         </td>
-
-                        {/* Sifat & Kategori */}
                         <td>
                           <div className="flex flex-col gap-1 items-start">
                             <span className={`sifat-badge ${item.sifat.toLowerCase().replace(/\s+/g, '-')}`}>
@@ -778,14 +932,51 @@ export default function SuratPage() {
                       </div>
 
                       <div className="card-detail-block">
-                        <div className="card-detail-line">
-                          <span className="dt-label">Pengirim:</span>
-                          <span className="dt-val">{item.pengirim}</span>
-                        </div>
-                        <div className="card-detail-line">
-                          <span className="dt-label">Tujuan:</span>
-                          <span className="dt-val">{item.tujuan}</span>
-                        </div>
+                        {isMasuk ? (
+                          <>
+                            <div className="card-detail-line">
+                              <span className="dt-label">1. Tanggal Masuk:</span>
+                              <span className="dt-val font-semibold text-blue-900">
+                                {item.tanggalDiterima || item.tanggalSurat}
+                              </span>
+                            </div>
+                            <div className="card-detail-line">
+                              <span className="dt-label">2. Asal Surat:</span>
+                              <span className="dt-val font-semibold text-slate-900">{item.pengirim}</span>
+                            </div>
+                            <div className="card-detail-line">
+                              <span className="dt-label">3. No Surat:</span>
+                              <span className="dt-val font-mono font-medium">{item.nomorSurat}</span>
+                            </div>
+                            <div className="card-detail-line">
+                              <span className="dt-label">4. Tanggal Surat:</span>
+                              <span className="dt-val">{item.tanggalSurat}</span>
+                            </div>
+                            <div className="card-detail-line">
+                              <span className="dt-label">5. Perihal:</span>
+                              <span className="dt-val font-semibold text-slate-800">{item.perihal}</span>
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            <div className="card-detail-line">
+                              <span className="dt-label">1. Tanggal Surat:</span>
+                              <span className="dt-val font-semibold text-blue-900">{item.tanggalSurat}</span>
+                            </div>
+                            <div className="card-detail-line">
+                              <span className="dt-label">2. No Surat Keluar:</span>
+                              <span className="dt-val font-mono font-medium">{item.nomorSurat}</span>
+                            </div>
+                            <div className="card-detail-line">
+                              <span className="dt-label">3. Kepada:</span>
+                              <span className="dt-val font-semibold text-slate-900">{item.tujuan}</span>
+                            </div>
+                            <div className="card-detail-line">
+                              <span className="dt-label">4. Perihal:</span>
+                              <span className="dt-val font-semibold text-slate-800">{item.perihal}</span>
+                            </div>
+                          </>
+                        )}
                         {item.ringkasan && item.ringkasan !== '-' && (
                           <div className="card-detail-line">
                             <span className="dt-label">Ringkasan:</span>
@@ -794,8 +985,27 @@ export default function SuratPage() {
                         )}
                       </div>
 
-                      {item.berkas && (
-                        <div className="card-bottom-actions">
+                      {item.berkasList && item.berkasList.length > 1 ? (
+                        <div className="card-bottom-actions flex flex-col gap-1.5 mt-2">
+                          <div className="text-xs font-semibold text-slate-700">
+                            Berkas Surat ({item.berkasList.length} Foto/Halaman):
+                          </div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {item.berkasList.map((url: string, i: number) => (
+                              <a
+                                key={i}
+                                href={url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="card-drive-btn text-xs py-1 px-2.5"
+                              >
+                                Buka Halaman {i + 1}
+                              </a>
+                            ))}
+                          </div>
+                        </div>
+                      ) : item.berkas ? (
+                        <div className="card-bottom-actions mt-2">
                           <a
                             href={item.berkas}
                             target="_blank"
@@ -805,7 +1015,7 @@ export default function SuratPage() {
                             Buka Dokumen di Google Drive
                           </a>
                         </div>
-                      )}
+                      ) : null}
                     </div>
                   </article>
                 );
@@ -850,10 +1060,11 @@ export default function SuratPage() {
                 <div className="word-form-grid">
                   {/* Bagian Unggah Berkas & AI Scan */}
                   <div className="word-form-group full-col">
-                    <label>Unggah Berkas Surat (Foto / PDF / Word .docx)</label>
+                    <label>Unggah Berkas Surat (Bisa Banyak Foto Halaman Sekaligus / PDF / Word .docx)</label>
                     <input
                       ref={fileInputRef}
                       type="file"
+                      multiple
                       accept="image/*,.pdf,.doc,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                       style={{ display: 'none' }}
                       onChange={handleFileSelect}
@@ -874,9 +1085,9 @@ export default function SuratPage() {
                         </div>
                         <div className="upload-text-main">Pilih Berkas atau Jepret Foto Surat</div>
                         <div className="upload-text-sub">
-                          Mendukung Foto Kamera, Dokumen PDF, atau Word (.docx). AI otomatis membaca nomor surat, tanggal, pengirim, dan perihal!
+                          Mendukung Foto Kamera (bisa pilih sekaligus &gt;3 foto jika surat banyak lembar), Dokumen PDF, atau Word (.docx). AI otomatis membaca seluruh halaman!
                         </div>
-                        <div className="upload-badge-drive">Otomatis dianalisis AI & disimpan ke Google Drive</div>
+                        <div className="upload-badge-drive">Otomatis dianalisis AI &amp; disimpan ke Google Drive</div>
                       </div>
                     ) : (
                       <div className="word-upload-preview-box">
@@ -892,15 +1103,33 @@ export default function SuratPage() {
                           {uploadingFile ? (
                             <div className="upload-status-uploading">
                               <span className="spinner-inline"></span>
-                              <span>AI sedang membaca isi dokumen & mengunggah ke Google Drive...</span>
+                              <span>AI sedang membaca isi dokumen &amp; mengunggah ke Google Drive...</span>
                             </div>
                           ) : formBerkas ? (
                             <div className="upload-status-success">
-                              <span className="check-badge">Tersimpan di Google Drive</span>
+                              <span className="check-badge">
+                                {multiPreviews.length > 1 ? `${multiPreviews.length} Berkas Tersimpan di Drive` : 'Tersimpan di Google Drive'}
+                              </span>
                               {uploadFileName && <span className="filename-text">{uploadFileName}</span>}
                               {aiDetectedMsg && <span className="ai-detected-text">{aiDetectedMsg}</span>}
+
+                              {multiPreviews.length > 1 && (
+                                <div className="flex gap-2 overflow-x-auto py-1 mt-1">
+                                  {multiPreviews.map((p, i) => (
+                                    <div key={i} className="flex flex-col items-center border border-slate-200 rounded p-1 bg-white">
+                                      {p.isImage && p.url ? (
+                                        <img src={p.url} alt={`Hal ${i + 1}`} className="w-12 h-16 object-cover rounded shadow-xs" />
+                                      ) : (
+                                        <div className="w-12 h-16 bg-slate-100 flex items-center justify-center text-[10px] text-slate-500 font-bold rounded">DOC</div>
+                                      )}
+                                      <span className="text-[10px] text-slate-600 font-semibold mt-0.5">Hal {i + 1}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+
                               <a
-                                href={formBerkas}
+                                href={formBerkas.split('\n')[0]}
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 className="drive-link-btn"
@@ -981,100 +1210,146 @@ export default function SuratPage() {
                     </select>
                   </div>
 
-                  {/* Nomor Surat */}
-                  <div className="word-form-group">
-                    <label>Nomor Surat Resmi</label>
-                    <input
-                      type="text"
-                      value={formNomor}
-                      onChange={(e) => setFormNomor(e.target.value)}
-                      placeholder="Contoh: 045/11.01-C/2026"
-                      className="word-form-control font-mono"
-                    />
-                  </div>
+                  {formJenis === 'Surat Masuk' ? (
+                    <>
+                      {/* Surat Masuk: 1. Tanggal Masuk Surat */}
+                      <div className="word-form-group">
+                        <label>
+                          1. Tanggal Masuk Surat <span className="req">*</span>
+                        </label>
+                        <input
+                          type="date"
+                          value={formTglDiterima}
+                          onChange={(e) => setFormTglDiterima(e.target.value)}
+                          className="word-form-control font-semibold"
+                          required
+                        />
+                      </div>
 
-                  {/* Kategori Surat */}
-                  <div className="word-form-group">
-                    <label>Kategori Surat</label>
-                    <select
-                      value={formKategori}
-                      onChange={(e) => setFormKategori(e.target.value)}
-                      className="word-form-control"
-                    >
-                      {DAFTAR_KATEGORI.map((k) => (
-                        <option key={k} value={k}>
-                          {k}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
+                      {/* Surat Masuk: 2. Asal Surat */}
+                      <div className="word-form-group">
+                        <label>
+                          2. Asal Surat (Pengirim) <span className="req">*</span>
+                        </label>
+                        <input
+                          type="text"
+                          value={formPengirim}
+                          onChange={(e) => setFormPengirim(e.target.value)}
+                          placeholder="Contoh: Kwarda Jawa Tengah / Kwarran Kroya"
+                          className="word-form-control font-semibold"
+                          required
+                        />
+                      </div>
 
-                  {/* Tanggal Surat */}
-                  <div className="word-form-group">
-                    <label>Tanggal Surat Tertulis</label>
-                    <input
-                      type="date"
-                      value={formTglSurat}
-                      onChange={(e) => setFormTglSurat(e.target.value)}
-                      className="word-form-control"
-                    />
-                  </div>
+                      {/* Surat Masuk: 3. No Surat */}
+                      <div className="word-form-group">
+                        <label>
+                          3. No Surat <span className="req">*</span>
+                        </label>
+                        <input
+                          type="text"
+                          value={formNomor}
+                          onChange={(e) => setFormNomor(e.target.value)}
+                          placeholder="Contoh: 045/11.01-C/2026"
+                          className="word-form-control font-mono font-semibold"
+                          required
+                        />
+                      </div>
 
-                  {/* Tanggal Masuk/Keluar */}
-                  <div className="word-form-group">
-                    <label>Tanggal Diterima / Keluar</label>
-                    <input
-                      type="date"
-                      value={formTglDiterima}
-                      onChange={(e) => setFormTglDiterima(e.target.value)}
-                      className="word-form-control"
-                    />
-                  </div>
+                      {/* Surat Masuk: 4. Tanggal Surat */}
+                      <div className="word-form-group">
+                        <label>
+                          4. Tanggal Surat (Tertulis) <span className="req">*</span>
+                        </label>
+                        <input
+                          type="date"
+                          value={formTglSurat}
+                          onChange={(e) => setFormTglSurat(e.target.value)}
+                          className="word-form-control"
+                          required
+                        />
+                      </div>
 
-                  {/* Pengirim / Asal Surat */}
-                  <div className="word-form-group">
-                    <label>
-                      Pengirim / Asal Surat <span className="req">*</span>
-                    </label>
-                    <input
-                      type="text"
-                      value={formPengirim}
-                      onChange={(e) => setFormPengirim(e.target.value)}
-                      placeholder="Contoh: Kwarda Jawa Tengah / Kwarran Kroya"
-                      className="word-form-control"
-                      required
-                    />
-                  </div>
+                      {/* Surat Masuk: 5. Perihal */}
+                      <div className="word-form-group full-col">
+                        <label>
+                          5. Perihal Surat <span className="req">*</span>
+                        </label>
+                        <input
+                          type="text"
+                          value={formPerihal}
+                          onChange={(e) => setFormPerihal(e.target.value)}
+                          placeholder="Contoh: Undangan Rapat Kerja Cabang Tahun 2026 / Permohonan Izin"
+                          className="word-form-control font-semibold"
+                          required
+                        />
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      {/* Surat Keluar: 1. Tanggal Surat */}
+                      <div className="word-form-group">
+                        <label>
+                          1. Tanggal Surat (Keluar) <span className="req">*</span>
+                        </label>
+                        <input
+                          type="date"
+                          value={formTglSurat}
+                          onChange={(e) => {
+                            setFormTglSurat(e.target.value);
+                            setFormTglDiterima(e.target.value);
+                          }}
+                          className="word-form-control font-semibold"
+                          required
+                        />
+                      </div>
 
-                  {/* Tujuan / Penerima Surat */}
-                  <div className="word-form-group">
-                    <label>
-                      Tujuan / Penerima <span className="req">*</span>
-                    </label>
-                    <input
-                      type="text"
-                      value={formTujuan}
-                      onChange={(e) => setFormTujuan(e.target.value)}
-                      placeholder="Contoh: DKC Cilacap / Ketua Kwarcab"
-                      className="word-form-control"
-                      required
-                    />
-                  </div>
+                      {/* Surat Keluar: 2. No Surat */}
+                      <div className="word-form-group">
+                        <label>
+                          2. No Surat Keluar <span className="req">*</span>
+                        </label>
+                        <input
+                          type="text"
+                          value={formNomor}
+                          onChange={(e) => setFormNomor(e.target.value)}
+                          placeholder="Contoh: 012/11.01-C/2026"
+                          className="word-form-control font-mono font-semibold"
+                          required
+                        />
+                      </div>
 
-                  {/* Perihal Surat */}
-                  <div className="word-form-group full-col">
-                    <label>
-                      Perihal / Hal Surat <span className="req">*</span>
-                    </label>
-                    <input
-                      type="text"
-                      value={formPerihal}
-                      onChange={(e) => setFormPerihal(e.target.value)}
-                      placeholder="Contoh: Undangan Rapat Kerja Cabang Tahun 2026 / Permohonan Bantuan Tenda"
-                      className="word-form-control font-semibold"
-                      required
-                    />
-                  </div>
+                      {/* Surat Keluar: 3. Kepada */}
+                      <div className="word-form-group full-col">
+                        <label>
+                          3. Kepada (Tujuan Surat) <span className="req">*</span>
+                        </label>
+                        <input
+                          type="text"
+                          value={formTujuan}
+                          onChange={(e) => setFormTujuan(e.target.value)}
+                          placeholder="Contoh: Seluruh Ketua Kwartir Ranting se-Cilacap / Kepala Dinas"
+                          className="word-form-control font-semibold"
+                          required
+                        />
+                      </div>
+
+                      {/* Surat Keluar: 4. Perihal */}
+                      <div className="word-form-group full-col">
+                        <label>
+                          4. Perihal Surat <span className="req">*</span>
+                        </label>
+                        <input
+                          type="text"
+                          value={formPerihal}
+                          onChange={(e) => setFormPerihal(e.target.value)}
+                          placeholder="Contoh: Edaran Kegiatan Kemah Bakti Penegak 2026"
+                          className="word-form-control font-semibold"
+                          required
+                        />
+                      </div>
+                    </>
+                  )}
 
                   {/* Ringkasan Isi Surat */}
                   <div className="word-form-group full-col">

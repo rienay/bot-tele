@@ -55,6 +55,7 @@ export interface SuratItem {
   sifat: SifatSurat | string;
   ringkasan: string;
   berkas: string;
+  berkasList?: string[];
   displayBerkas?: string;
   waktuInput: string;
   pic: string;
@@ -210,10 +211,10 @@ export async function getAllSurat(): Promise<SuratItem[]> {
     const sifat = String(r[9] || 'Biasa').trim();
     const ringkasan = String(r[10] || '-').trim();
     const berkas = String(r[11] || '').trim();
-    const waktuInput = String(r[12] || '-').trim();
-    const pic = String(r[13] || 'Staff DKC').trim();
-
-    const displayBerkas = berkas ? formatDriveImageUrl(berkas) : '';
+    const berkasList = berkas ? berkas.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean) : [];
+    const displayBerkas = berkasList.length > 0 ? formatDriveImageUrl(berkasList[0]) : '';
+    const waktuInput = String(r[12] || '').trim();
+    const pic = String(r[13] || '').trim();
 
     items.push({
       rowNumber: i + 2,
@@ -229,6 +230,7 @@ export async function getAllSurat(): Promise<SuratItem[]> {
       sifat,
       ringkasan,
       berkas,
+      berkasList,
       displayBerkas,
       waktuInput,
       pic,
@@ -275,7 +277,7 @@ export async function tambahSurat(data: {
   kategori?: string;
   sifat?: string;
   ringkasan?: string;
-  berkas?: string;
+  berkas?: string | string[];
   pic?: string;
 }): Promise<SuratItem> {
   await ensureSuratSheet();
@@ -293,6 +295,12 @@ export async function tambahSurat(data: {
     day: '2-digit',
   }).format(new Date());
 
+  const berkasStr = Array.isArray(data.berkas)
+    ? data.berkas.filter(Boolean).join('\n')
+    : (data.berkas || '');
+  const berkasList = berkasStr ? berkasStr.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean) : [];
+  const displayBerkas = berkasList.length > 0 ? formatDriveImageUrl(berkasList[0]) : '';
+
   const rowData = [
     kodeArsip,
     data.jenis,
@@ -305,7 +313,7 @@ export async function tambahSurat(data: {
     data.kategori || 'Lain-lain',
     data.sifat || 'Biasa',
     data.ringkasan || '-',
-    data.berkas || '',
+    berkasStr,
     nowJakarta,
     data.pic || 'Staff DKC',
   ];
@@ -337,8 +345,9 @@ export async function tambahSurat(data: {
     kategori: data.kategori || 'Lain-lain',
     sifat: data.sifat || 'Biasa',
     ringkasan: data.ringkasan || '-',
-    berkas: data.berkas || '',
-    displayBerkas: data.berkas ? formatDriveImageUrl(data.berkas) : '',
+    berkas: berkasStr,
+    berkasList,
+    displayBerkas,
     waktuInput: nowJakarta,
     pic: data.pic || 'Staff DKC',
   };

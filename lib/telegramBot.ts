@@ -1,7 +1,7 @@
 import { Bot, InputFile, InlineKeyboard } from 'grammy';
 import dns from 'dns';
 import { google } from 'googleapis';
-import { parseTextMessage, parseReceiptImage, parseDocumentSurat, ParsedSurat, getLocalTodayDateString } from './gemini';
+import { parseTextMessage, parseReceiptImage, parseDocumentSurat, parseMultipleDocumentsSurat, ParsedSurat, getLocalTodayDateString } from './gemini';
 import {
   appendTransaction,
   getMonthSummary,
@@ -126,6 +126,45 @@ interface NotaState {
 }
 // Map: chatId → state nota yang sedang berlangsung
 const notaStates = new Map<number, NotaState>();
+
+// ============================================================
+// BUFFER: Telegram Media Group (Album foto multi-halaman surat DKC)
+// ============================================================
+interface MediaGroupSuratItem {
+  ctx: any;
+  fileId: string;
+  fileName: string;
+  mimeType: string;
+  caption?: string;
+}
+const mediaGroupSuratMap = new Map<string, {
+  chatId: number;
+  items: MediaGroupSuratItem[];
+  timer: NodeJS.Timeout;
+}>();
+
+async function handleMediaGroupFinish(mediaGroupId: string) {
+  const group = mediaGroupSuratMap.get(mediaGroupId);
+  mediaGroupSuratMap.delete(mediaGroupId);
+  if (!group || group.items.length === 0) return;
+
+  const primaryCtx = group.items[0].ctx;
+  const groupCaption = group.items.find((it) => it.caption?.trim())?.caption || '';
+
+  const isInventaris =
+    groupCaption.startsWith('/tambahbarang') ||
+    groupCaption.startsWith('/barang') ||
+    /^(unit:|nama:|barang:)/i.test(groupCaption.trim());
+
+  if (isInventaris) {
+    const first = group.items[0];
+    await handleTambahBarangWithPhoto(primaryCtx, first.fileId, groupCaption, first.mimeType);
+    return;
+  }
+
+  // Multi-halaman surat resmi DKC (misal 2, 3, atau lebih foto)
+  await handleMultipleSuratDocuments(primaryCtx, group.items, groupCaption);
+}
 
 // ============================================================
 // STATE: Unggah ulang foto nota untuk transaksi tertentu
@@ -2992,57 +3031,77 @@ async function handleListSurat(ctx: any, jenisFilter?: JenisSurat) {
 }
 
 /**
- * Menangani dokumen surat (Foto, PDF, Word .docx) yang diunggah ke Telegram
+ * Menangani berkas surat (bisa 1 atau banyak foto halaman sekaligus, PDF, atau Word .docx)
  */
-async function handleSuratDocument(
+async function handleMultipleSuratDocuments(
   ctx: any,
-  fileId: string,
-  fileName: string,
-  mimeType: string,
+  fileItems: Array<{ fileId: string; fileName: string; mimeType: string }>,
   caption?: string
 ) {
   const senderName = ctx.from?.first_name || 'Pengguna';
   const username = ctx.from?.username ? `@${ctx.from.username}` : '';
   const pic = username ? `${senderName} (${username})` : senderName;
+  const count = fileItems.length;
 
-  await ctx.reply(
-    `📑 *Menganalisis dokumen surat dengan AI & mengunggah ke Google Drive...*\n` +
-      `_Mohon tunggu beberapa saat..._`,
-    { parse_mode: 'Markdown' }
-  );
+  const waitMsg =
+    count > 1
+      ? `📑 *Menganalisis ${count} foto surat & mengunggah ke Google Drive...*\n_AI membaca seluruh halaman dokumen secara simultan..._`
+      : `📑 *Menganalisis dokumen surat dengan AI & mengunggah ke Google Drive...*\n_Mohon tunggu beberapa saat..._`;
+
+  await ctx.reply(waitMsg, { parse_mode: 'Markdown' });
   await ctx.replyWithChatAction('upload_document');
 
   try {
-    const file = await ctx.api.getFile(fileId);
-    if (!file.file_path) {
-      throw new Error('Tidak dapat mengunduh berkas dari server Telegram.');
-    }
+    const timestamp = Date.now();
 
-    const fileUrl = `https://api.telegram.org/file/bot${process.env.TELEGRAM_BOT_TOKEN}/${file.file_path}`;
-    const response = await fetch(fileUrl);
-    if (!response.ok) {
-      throw new Error(`Gagal fetch file dari Telegram: ${response.statusText}`);
-    }
+    // 1. Download seluruh berkas dari Telegram
+    const downloadedFiles = await Promise.all(
+      fileItems.map(async (item, idx) => {
+        const file = await ctx.api.getFile(item.fileId);
+        if (!file.file_path) {
+          throw new Error(`Tidak dapat mengunduh berkas ${idx + 1} dari Telegram.`);
+        }
+        const fileUrl = `https://api.telegram.org/file/bot${process.env.TELEGRAM_BOT_TOKEN}/${file.file_path}`;
+        const response = await fetch(fileUrl);
+        if (!response.ok) {
+          throw new Error(`Gagal fetch berkas ${idx + 1} dari Telegram: ${response.statusText}`);
+        }
+        const arrayBuffer = await response.arrayBuffer();
+        return {
+          buffer: Buffer.from(arrayBuffer),
+          mimeType: item.mimeType,
+          fileName: item.fileName,
+        };
+      })
+    );
 
-    const arrayBuffer = await response.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-
-    const ext = fileName.split('.').pop() || 'pdf';
-    const driveFileName = `surat_dkc_${Date.now()}.${ext}`;
-
-    // Upload ke Drive dan Ekstraksi AI secara simultan
-    const [driveLink, parsedSurat] = await Promise.all([
-      uploadReceiptToDrive(buffer, driveFileName, mimeType).catch((err) => {
-        console.error('Error upload berkas surat ke Drive:', err);
+    // 2. Upload seluruh berkas ke Google Drive secara paralel
+    const uploadPromises = downloadedFiles.map((f, idx) => {
+      const ext = f.fileName.split('.').pop() || 'jpg';
+      const driveFileName =
+        count > 1
+          ? `surat_dkc_${timestamp}_hal${idx + 1}.${ext}`
+          : `surat_dkc_${timestamp}.${ext}`;
+      return uploadReceiptToDrive(f.buffer, driveFileName, f.mimeType).catch((err) => {
+        console.error(`Error upload berkas ${idx + 1} ke Drive:`, err);
         return null;
-      }),
-      parseDocumentSurat(buffer, mimeType, fileName, caption).catch((err) => {
-        console.error('Error AI parse surat:', err);
-        return null;
-      }),
+      });
+    });
+
+    // 3. Analisis AI Gemini secara simultan mencakup seluruh halaman
+    const aiPromise = parseMultipleDocumentsSurat(downloadedFiles, caption).catch((err) => {
+      console.error('Error AI parse surat:', err);
+      return null;
+    });
+
+    const [driveUrls, parsedSurat] = await Promise.all([
+      Promise.all(uploadPromises),
+      aiPromise,
     ]);
 
-    // Tentukan jenis surat
+    const validUrls = driveUrls.filter((u): u is string => Boolean(u));
+
+    // Tentukan jenis surat (Surat Masuk atau Surat Keluar)
     let jenis: JenisSurat = 'Surat Masuk';
     const capLower = (caption || '').toLowerCase();
     if (capLower.includes('keluar') || capLower.includes('sk')) {
@@ -3075,29 +3134,73 @@ async function handleSuratDocument(
       kategori,
       sifat,
       ringkasan,
-      berkas: driveLink || '',
+      berkas: validUrls,
       pic,
     });
 
     const keyboard = new InlineKeyboard();
-    if (driveLink) {
-      keyboard.url('📄 Buka Berkas di Drive', driveLink);
+    if (validUrls.length === 1) {
+      keyboard.url('📄 Buka Berkas di Drive', validUrls[0]);
+    } else if (validUrls.length > 1) {
+      validUrls.slice(0, 4).forEach((u, idx) => {
+        keyboard.url(`📄 Hal ${idx + 1}`, u);
+      });
+      keyboard.row();
     }
     keyboard.url('🌐 Buka Tabel Web Persuratan', WEB_SURAT_URL);
 
-    await ctx.reply(
-      `✅ *Dokumen Berhasil Dicatat ke Arsip Persuratan DKC!*\n\n` +
+    // Format tampilan rincian sesuai instruksi pengguna:
+    // Surat Masuk: tanggal masuk surat, asal surat, no surat, tanggal surat, perihal
+    // Surat Keluar: tanggal surat, no surat, kepada, perihal
+    let headerText = '';
+    let mainFieldsText = '';
+
+    if (newItem.jenis === 'Surat Masuk') {
+      headerText = `✅ *Surat Masuk Berhasil Dicatat ke Arsip DKC!*`;
+      mainFieldsText =
         `🏷️ *Kode Arsip:* \`${newItem.kodeArsip}\`\n` +
-        `📂 *Jenis Surat:* *${newItem.jenis}*\n` +
-        `🔢 *No. Surat:* \`${newItem.nomorSurat}\`\n` +
-        `📅 *Tanggal:* ${newItem.tanggalSurat}\n` +
-        `🏢 *Pengirim:* ${newItem.pengirim}\n` +
-        `🎯 *Tujuan:* ${newItem.tujuan}\n` +
-        `📋 *Perihal:* *${newItem.perihal}*\n` +
-        `🏷️ *Kategori & Sifat:* ${newItem.kategori} (${newItem.sifat})\n` +
-        (newItem.ringkasan && newItem.ringkasan !== '-' ? `📝 *Ringkasan:* _${newItem.ringkasan}_\n` : '') +
+        `📂 *Jenis:* *Surat Masuk*\n` +
+        `📥 *Tanggal Masuk Surat:* ${newItem.tanggalDiterima}\n` +
+        `🏢 *Asal Surat:* ${newItem.pengirim}\n` +
+        `🔢 *No Surat:* \`${newItem.nomorSurat}\`\n` +
+        `📅 *Tanggal Surat:* ${newItem.tanggalSurat}\n` +
+        `📋 *Perihal:* *${newItem.perihal}*`;
+    } else {
+      headerText = `✅ *Surat Keluar Berhasil Dicatat ke Arsip DKC!*`;
+      mainFieldsText =
+        `🏷️ *Kode Arsip:* \`${newItem.kodeArsip}\`\n` +
+        `📂 *Jenis:* *Surat Keluar*\n` +
+        `📅 *Tanggal Surat:* ${newItem.tanggalSurat}\n` +
+        `🔢 *No Surat:* \`${newItem.nomorSurat}\`\n` +
+        `🎯 *Kepada:* ${newItem.tujuan}\n` +
+        `📋 *Perihal:* *${newItem.perihal}*`;
+    }
+
+    let extraDetails =
+      `\n🏷️ *Kategori & Sifat:* ${newItem.kategori} (${newItem.sifat})\n` +
+      (newItem.ringkasan && newItem.ringkasan !== '-' ? `📝 *Ringkasan:* _${newItem.ringkasan}_\n` : '');
+
+    let driveLinksText = '';
+    if (validUrls.length === 1) {
+      driveLinksText = `\n📁 *Berkas:* [Buka di Google Drive](${validUrls[0]})\n`;
+    } else if (validUrls.length > 1) {
+      driveLinksText =
+        `\n📁 *Berkas Terunggah (${validUrls.length} Foto Halaman):*\n` +
+        validUrls.map((u, i) => `  ${i + 1}. [Halaman ${i + 1} di Google Drive](${u})`).join('\n') +
+        '\n';
+    }
+
+    const singlePhotoTip = count === 1
+      ? `\n💡 _Tips: Jika surat memiliki lebih dari 1 halaman (2, 3, atau lebih foto), Anda bisa memilih & mengirimkan beberapa foto sekaligus dalam satu album di Telegram._\n`
+      : '';
+
+    await ctx.reply(
+      `${headerText}\n\n` +
+        `${mainFieldsText}\n` +
+        `${extraDetails}` +
+        `${driveLinksText}` +
         `\n👤 *PIC Input:* ${pic}\n` +
-        (driveLink ? `🔗 [Buka Berkas di Google Drive](${driveLink})\n\n` : '\n') +
+        `${singlePhotoTip}\n` +
         `_Data tersimpan di tab Google Sheets **${SHEET_SURAT}** dan tabel web persuratan._`,
       {
         parse_mode: 'Markdown',
@@ -3106,9 +3209,22 @@ async function handleSuratDocument(
       }
     );
   } catch (err: any) {
-    console.error('Error handling surat document:', err);
+    console.error('Error handling multiple surat documents:', err);
     await ctx.reply(`❌ Terjadi kendala saat memproses berkas surat: ${err?.message || err}`);
   }
+}
+
+/**
+ * Menangani single dokumen surat yang diunggah ke Telegram
+ */
+async function handleSuratDocument(
+  ctx: any,
+  fileId: string,
+  fileName: string,
+  mimeType: string,
+  caption?: string
+) {
+  return handleMultipleSuratDocuments(ctx, [{ fileId, fileName, mimeType }], caption);
 }
 
 // Commands: Persuratan DKC
@@ -4349,6 +4465,29 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
     }
 
     const rawCaption = ctx.message.caption || '';
+
+    // === Cek jika pesan ini adalah bagian dari Album Foto / Media Group (Multi-halaman surat DKC) ===
+    const mediaGroupId = ctx.message.media_group_id;
+    if (mediaGroupId) {
+      const existing = mediaGroupSuratMap.get(mediaGroupId);
+      if (existing) {
+        clearTimeout(existing.timer);
+        existing.items.push({ ctx, fileId, fileName, mimeType, caption: rawCaption });
+        existing.timer = setTimeout(() => {
+          handleMediaGroupFinish(mediaGroupId);
+        }, 1200);
+      } else {
+        const timer = setTimeout(() => {
+          handleMediaGroupFinish(mediaGroupId);
+        }, 1200);
+        mediaGroupSuratMap.set(mediaGroupId, {
+          chatId,
+          items: [{ ctx, fileId, fileName, mimeType, caption: rawCaption }],
+          timer,
+        });
+      }
+      return;
+    }
 
     // === Cek jika ini adalah berkas persuratan DKC (Surat Masuk / Surat Keluar) ===
     const isDocxOrPdf =
