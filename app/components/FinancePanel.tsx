@@ -359,8 +359,8 @@ export default function FinancePanel({
         </div>
       </div>
 
-      {/* Transactions Table */}
-      <div className="p-card" style={{ padding: 0, overflow: 'hidden' }}>
+      {/* Transactions Table (Desktop) */}
+      <div className="p-card desktop-only-table" style={{ padding: 0, overflow: 'hidden' }}>
         <div className="p-table-wrap">
           <table className="p-table">
             <thead>
@@ -423,6 +423,54 @@ export default function FinancePanel({
             </tbody>
           </table>
         </div>
+      </div>
+
+      {/* Transactions Cards (Mobile HP) */}
+      <div className="mobile-only-cards">
+        {loading && !data ? (
+          <div className="p-card" style={{ textAlign: 'center', color: '#64748B', fontSize: 14 }}>
+            Memuat data keuangan...
+          </div>
+        ) : filtered.length === 0 ? (
+          <div className="p-card" style={{ textAlign: 'center', color: '#64748B', fontSize: 14 }}>
+            Belum ada transaksi yang cocok dengan filter.
+          </div>
+        ) : (
+          filtered.slice(0, 60).map((tx) => (
+            <div key={tx.id} className="m-item-card">
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+                <div style={{ fontWeight: 700, fontSize: 14, lineHeight: 1.35 }}>{tx.description}</div>
+                <div
+                  style={{
+                    fontWeight: 800,
+                    fontSize: 14,
+                    whiteSpace: 'nowrap',
+                    color: tx.type === 'Pemasukan' ? '#047857' : '#B91C1C',
+                  }}
+                >
+                  {tx.type === 'Pemasukan' ? '+' : '-'}{formatRupiah(tx.amount)}
+                </div>
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 6, fontSize: 12, color: '#64748B' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span className="p-badge">{tx.book}</span>
+                  <span>{tx.category}</span>
+                  <span>• {tx.date}</span>
+                </div>
+                {tx.noteLink && (
+                  <a
+                    href={tx.noteLink}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ color: 'var(--accent)', fontWeight: 700 }}
+                  >
+                    📸 Lihat Nota
+                  </a>
+                )}
+              </div>
+            </div>
+          ))
+        )}
       </div>
 
       {/* Modals */}

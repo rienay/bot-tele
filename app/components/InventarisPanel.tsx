@@ -190,8 +190,8 @@ export default function InventarisPanel({
         />
       </div>
 
-      {/* Table */}
-      <div className="p-card" style={{ padding: 0, overflow: 'hidden' }}>
+      {/* Table (Desktop) */}
+      <div className="p-card desktop-only-table" style={{ padding: 0, overflow: 'hidden' }}>
         <div className="p-table-wrap">
           <table className="p-table">
             <thead>
@@ -264,6 +264,60 @@ export default function InventarisPanel({
             </tbody>
           </table>
         </div>
+      </div>
+
+      {/* Cards (Mobile HP) */}
+      <div className="mobile-only-cards">
+        {loading && items.length === 0 ? (
+          <div className="p-card" style={{ textAlign: 'center', color: '#64748B', fontSize: 14 }}>
+            Memuat data inventaris...
+          </div>
+        ) : filtered.length === 0 ? (
+          <div className="p-card" style={{ textAlign: 'center', color: '#64748B', fontSize: 14 }}>
+            Belum ada barang inventaris.
+          </div>
+        ) : (
+          filtered.map((it) => (
+            <div key={it.kodeBarang} className="m-item-card">
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+                <div>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: '#64748B' }}>{it.kodeBarang}</div>
+                  <div style={{ fontWeight: 700, fontSize: 15 }}>{it.namaBarang}</div>
+                </div>
+                <span
+                  className="p-badge"
+                  style={{
+                    background: it.kondisi === 'Baik' ? '#DCFCE7' : '#FEE2E2',
+                    color: it.kondisi === 'Baik' ? '#166534' : '#991B1B',
+                    flexShrink: 0,
+                  }}
+                >
+                  {it.kondisi}
+                </span>
+              </div>
+              {it.keterangan && it.keterangan !== '-' && (
+                <div style={{ fontSize: 12, color: '#64748B' }}>{it.keterangan}</div>
+              )}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 12, color: '#475569' }}>
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  {!unitOnly && <span className="p-badge">{it.unit}</span>}
+                  <span>Jumlah: <strong>{it.jumlah}</strong></span>
+                  <span>• {it.tahun}</span>
+                </div>
+                {it.foto && (
+                  <a
+                    href={it.foto}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ color: 'var(--accent)', fontWeight: 700 }}
+                  >
+                    📷 Foto
+                  </a>
+                )}
+              </div>
+            </div>
+          ))
+        )}
       </div>
 
       {/* Add Modal */}

@@ -428,6 +428,24 @@ export default function HomePage() {
           />
         )}
       </main>
+
+      {/* Mobile Bottom Navigation */}
+      <nav className="portal-bottom-nav" aria-label="Navigasi Bawah HP">
+        {menuItems.map((m) => (
+          <button
+            key={m.id}
+            type="button"
+            className={`portal-bottom-btn ${activeTab === m.id ? 'active' : ''}`}
+            onClick={() => {
+              setActiveTab(m.id);
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }}
+          >
+            <span>{m.icon}</span>
+            <span>{m.label}</span>
+          </button>
+        ))}
+      </nav>
     </div>
   );
 }

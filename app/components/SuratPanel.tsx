@@ -208,8 +208,8 @@ export default function SuratPanel({
         />
       </div>
 
-      {/* Table */}
-      <div className="p-card" style={{ padding: 0, overflow: 'hidden' }}>
+      {/* Table (Desktop) */}
+      <div className="p-card desktop-only-table" style={{ padding: 0, overflow: 'hidden' }}>
         <div className="p-table-wrap">
           <table className="p-table">
             <thead>
@@ -279,6 +279,52 @@ export default function SuratPanel({
             </tbody>
           </table>
         </div>
+      </div>
+
+      {/* Cards (Mobile HP) */}
+      <div className="mobile-only-cards">
+        {loading && items.length === 0 ? (
+          <div className="p-card" style={{ textAlign: 'center', color: '#64748B', fontSize: 14 }}>
+            Memuat arsip persuratan...
+          </div>
+        ) : filtered.length === 0 ? (
+          <div className="p-card" style={{ textAlign: 'center', color: '#64748B', fontSize: 14 }}>
+            Belum ada arsip surat.
+          </div>
+        ) : (
+          filtered.map((s) => (
+            <div key={s.kodeArsip} className="m-item-card">
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: '#64748B' }}>{s.kodeArsip} • {s.tanggalSurat}</span>
+                <span
+                  className="p-badge"
+                  style={{
+                    background: s.jenis === 'Surat Masuk' ? '#DBEAFE' : '#DCFCE7',
+                    color: s.jenis === 'Surat Masuk' ? '#1E40AF' : '#166534',
+                  }}
+                >
+                  {s.jenis}
+                </span>
+              </div>
+              <div style={{ fontWeight: 700, fontSize: 15, lineHeight: 1.35 }}>{s.perihal}</div>
+              <div style={{ fontSize: 12, color: '#64748B' }}>
+                No: {s.nomorSurat} • Dari: {s.pengirim}
+              </div>
+              {s.berkas && (
+                <div>
+                  <a
+                    href={s.berkas.split('\n')[0]}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ color: 'var(--accent)', fontWeight: 700, fontSize: 13 }}
+                  >
+                    📄 Buka Berkas Surat
+                  </a>
+                </div>
+              )}
+            </div>
+          ))
+        )}
       </div>
 
       {/* Add Modal */}
