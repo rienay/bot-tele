@@ -2,8 +2,14 @@ import type { Metadata, Viewport } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'Dashboard Keuangan & Inventaris DKC',
-  description: 'Portal akses catatan keuangan & inventaris logistik terbuka Kwarcab 11.01 Cilacap.',
+  title: 'Ini Sanggar',
+  description: 'Aplikasi web terpadu keuangan, inventaris, persuratan, dan asisten chat bot sesuai akses bagian.',
+  icons: { apple: '/apple-touch-icon.png' },
+  appleWebApp: {
+    capable: true,
+    title: 'Ini Sanggar',
+    statusBarStyle: 'default',
+  },
 };
 
 export const viewport: Viewport = {
@@ -11,7 +17,7 @@ export const viewport: Viewport = {
   initialScale: 1,
   maximumScale: 5,
   viewportFit: 'cover',
-  themeColor: '#185abd',
+  themeColor: '#1D4ED8',
 };
 
 export default function RootLayout({

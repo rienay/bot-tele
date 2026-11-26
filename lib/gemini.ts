@@ -19,11 +19,11 @@ export function getLocalTodayDateString(date: Date = new Date()): string {
   }).format(date);
 }
 
-const GEMINI_MODELS = ['gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite'];
+const GEMINI_MODELS = ['gemini-3.5-flash-lite', 'gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-3.5-flash'];
 
 /**
- * Memanggil Gemini dengan fallback berantai antar model (gemini-3.6-flash -> gemini-3.5-flash -> gemini-3.5-flash-lite)
- * untuk mengatasi 429 Too Many Requests atau 503 Service Unavailable pada free tier.
+ * Memanggil Gemini dengan fallback berantai antar model
+ * untuk mengatasi 429 Too Many Requests, 503 Service Unavailable, atau model tidak tersedia.
  */
 async function generateWithFallback(contents: any): Promise<any> {
   const genAI = getGeminiClient();
@@ -42,18 +42,22 @@ async function generateWithFallback(contents: any): Promise<any> {
       return await model.generateContent(contents);
     } catch (err: any) {
       lastError = err;
-      const isRateLimitOrTemporary =
+      const msg = String(err?.message || '').toLowerCase();
+      const shouldFallback =
         err?.status === 429 ||
-        err?.message?.includes('429') ||
-        err?.message?.includes('quota') ||
-        err?.message?.includes('Too Many Requests') ||
         err?.status === 503 ||
-        err?.message?.includes('503') ||
-        err?.message?.includes('high demand') ||
-        err?.message?.includes('temporarily unavailable');
+        err?.status === 404 ||
+        msg.includes('429') ||
+        msg.includes('quota') ||
+        msg.includes('too many requests') ||
+        msg.includes('503') ||
+        msg.includes('high demand') ||
+        msg.includes('temporarily unavailable') ||
+        msg.includes('404') ||
+        msg.includes('not found');
 
-      if (isRateLimitOrTemporary) {
-        console.warn(`[Gemini] Model ${modelName} limit/beban tinggi, otomatis mencoba model cadangan...`);
+      if (shouldFallback) {
+        console.warn(`[Gemini] Model ${modelName} gagal (${err?.status || 'error'}), mencoba model cadangan...`);
         continue;
       }
       throw err;
