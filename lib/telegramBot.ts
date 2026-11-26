@@ -4321,7 +4321,13 @@ bot.on('message:text', async (ctx) => {
   // === 5. Pencatatan Transaksi Normal Berbasis Teks ===
   try {
     const senderId = String(ctx.from?.id);
-    if (senderId && !(await isUserAllowedFinance(senderId))) {
+    const [allowed, activeBook, parsed] = await Promise.all([
+      senderId ? isUserAllowedFinance(senderId) : Promise.resolve(true),
+      getUserActiveBook(chatId),
+      parseTextMessage(text),
+    ]);
+
+    if (!allowed) {
       const kb = new InlineKeyboard()
         .text('📦 Inventaris', 'inv_main')
         .text('📑 Persuratan', 'surat_main')
@@ -4338,10 +4344,7 @@ bot.on('message:text', async (ctx) => {
       return;
     }
 
-    await ctx.replyWithChatAction('typing');
-
-    const activeBook = await getUserActiveBook(chatId);
-    const parsed = await parseTextMessage(text);
+    await ctx.replyWithChatAction('typing').catch(() => {});
 
     if (!parsed) {
       await ctx.reply(
@@ -4956,4 +4959,8 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
       );
     }
   }
+});
+
+bot.catch((err) => {
+  console.error('Unhandled Grammy bot error:', err.error);
 });
