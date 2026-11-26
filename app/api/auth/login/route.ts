@@ -21,8 +21,7 @@ export async function POST(request: Request) {
       return NextResponse.json(
         {
           success: false,
-          error:
-            'Kode akses tidak dikenali. Gunakan kode sesuai bagian: bendahara, dkc, cyber, paspanca, ubaloka, atau unpasa.',
+          error: 'Kode akses tidak valid. Cek kode akses kamu di bot Telegram (/kodeakses).',
         },
         { status: 401 }
       );

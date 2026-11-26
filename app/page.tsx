@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { WEB_ROLES, WebRoleConfig, WebRoleKey, getRoleConfig } from '@/lib/webAuth';
+import { WebRoleConfig, WebRoleKey, getRoleConfig } from '@/lib/webAuth';
 import { WebFinanceData } from '@/lib/types';
 import FinancePanel from './components/FinancePanel';
 import KasPanel from './components/KasPanel';
@@ -25,6 +25,7 @@ export default function HomePage() {
 
   // Login form state
   const [codeInput, setCodeInput] = useState('');
+  const [showCode, setShowCode] = useState(false);
   const [nameInput, setNameInput] = useState('');
   const [loginBusy, setLoginBusy] = useState(false);
   const [loginError, setLoginError] = useState('');
@@ -180,7 +181,6 @@ export default function HomePage() {
 
   // LOGIN SCREEN
   if (!session || !roleConfig) {
-    const roleList = Object.values(WEB_ROLES);
     return (
       <div className="login-shell">
         <section className="login-card">
@@ -188,7 +188,7 @@ export default function HomePage() {
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
               src="/icon-192.png"
-              alt="Logo Portal DKC"
+              alt="Logo Ini Sanggar"
               style={{
                 width: 84,
                 height: 84,
@@ -201,7 +201,7 @@ export default function HomePage() {
               Ini Sanggar
             </h1>
             <p style={{ fontSize: 13, color: '#64748B', margin: 0 }}>
-              Masuk sesuai akses bagian untuk membuka menu yang simpel & rapi
+              Masukkan kode akses bagian untuk masuk
             </p>
           </div>
 
@@ -220,16 +220,27 @@ export default function HomePage() {
 
             <div>
               <label style={{ display: 'block', fontSize: 12, fontWeight: 700, marginBottom: 4, color: '#334155' }}>
-                Kode Akses Bagian
+                Kode Akses
               </label>
-              <input
-                className="p-input"
-                value={codeInput}
-                onChange={(e) => setCodeInput(e.target.value)}
-                placeholder="Ketik: bendahara, dkc, cyber, paspanca, ubaloka, unpasa"
-                required
-                autoFocus
-              />
+              <div style={{ display: 'flex', gap: 6 }}>
+                <input
+                  className="p-input"
+                  type={showCode ? 'text' : 'password'}
+                  value={codeInput}
+                  onChange={(e) => setCodeInput(e.target.value)}
+                  placeholder="Masukkan kode akses"
+                  required
+                  autoFocus
+                />
+                <button
+                  type="button"
+                  className="p-btn p-btn-outline"
+                  style={{ padding: '0 12px', fontSize: 12, flexShrink: 0 }}
+                  onClick={() => setShowCode((v) => !v)}
+                >
+                  {showCode ? 'Tutup' : 'Lihat'}
+                </button>
+              </div>
             </div>
 
             {loginError && (
@@ -254,7 +265,7 @@ export default function HomePage() {
               style={{ width: '100%', padding: '12px 16px', fontSize: 15 }}
               disabled={loginBusy}
             >
-              {loginBusy ? 'Memeriksa Akses...' : 'Masuk ke Portal'}
+              {loginBusy ? 'Memeriksa Akses...' : 'Masuk'}
             </button>
 
             {installPrompt && (
@@ -269,27 +280,9 @@ export default function HomePage() {
             )}
           </form>
 
-          <div style={{ marginTop: 18, paddingTop: 14, borderTop: '1px solid #F1F5F9' }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: '#64748B', marginBottom: 6 }}>
-              Pilih Cepat Kode Akses:
-            </div>
-            <div className="role-quick-grid">
-              {roleList.map((r) => (
-                <button
-                  key={r.key}
-                  type="button"
-                  className="role-quick-btn"
-                  onClick={() => {
-                    setCodeInput(r.key);
-                    setLoginError('');
-                  }}
-                >
-                  <span className="role-dot" style={{ background: r.theme.primary }} />
-                  <span>{r.shortLabel}</span>
-                </button>
-              ))}
-            </div>
-          </div>
+          <p style={{ textAlign: 'center', fontSize: 12, color: '#64748B', margin: '16px 0 0' }}>
+            Kode akses hanya dapat dilihat melalui bot Telegram (<code style={{ fontWeight: 600 }}>/kodeakses</code>)
+          </p>
         </section>
       </div>
     );

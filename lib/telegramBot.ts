@@ -1143,6 +1143,40 @@ bot.command(['linkuang', 'linkweb', 'dashboard', 'website'], async (ctx) => {
   );
 });
 
+// Command: /kodeakses (Melihat kode akses web Ini Sanggar)
+bot.command(['kodeakses', 'aksesweb'], async (ctx) => {
+  const senderId = String(ctx.from?.id || '');
+  const allowedFinance = senderId ? await isUserAllowedFinance(senderId) : false;
+  const adminId = getAdminTelegramId();
+  const isAdmin = senderId === adminId;
+
+  const codeBendahara = (process.env.WEB_ACCESS_BENDAHARA || 'bendahara').split(',')[0].trim();
+  const codeDkc = (process.env.WEB_ACCESS_DKC || 'dkc').split(',')[0].trim();
+  const codeCyber = (process.env.WEB_ACCESS_CYBER || 'cyber').split(',')[0].trim();
+  const codePaspanca = (process.env.WEB_ACCESS_PASPANCA || 'paspanca').split(',')[0].trim();
+  const codeUbaloka = (process.env.WEB_ACCESS_UBALOKA || 'ubaloka').split(',')[0].trim();
+  const codeUnpasa = (process.env.WEB_ACCESS_UNPASA || 'unpasa').split(',')[0].trim();
+
+  const lines: string[] = [
+    `🔐 *Kode Akses Web Ini Sanggar*`,
+    `🌐 Link: https://bot-tele-topaz.vercel.app`,
+    ``,
+  ];
+
+  if (isAdmin || allowedFinance) {
+    lines.push(`• 🔵 *Bendahara (Keuangan):* \`${codeBendahara}\``);
+  }
+  lines.push(`• 🟢 *DKC (Inventaris & Surat):* \`${codeDkc}\``);
+  lines.push(`• 🔷 *Unit Cyber:* \`${codeCyber}\``);
+  lines.push(`• 🔴 *Unit Paspanca:* \`${codePaspanca}\``);
+  lines.push(`• 🟠 *Unit Ubaloka:* \`${codeUbaloka}\``);
+  lines.push(`• 🟡 *Unit UNPASA:* \`${codeUnpasa}\``);
+  lines.push(``);
+  lines.push(`_Jangan bagikan kode akses Bendahara ke pihak yang tidak berkepentingan._`);
+
+  await ctx.reply(lines.join('\n'), { parse_mode: 'Markdown' });
+});
+
 // ============================================================
 // LOGIKA & HANDLER PINDAH SALDO ANTAR BUKU / KEGIATAN
 // ============================================================
