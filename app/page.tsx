@@ -184,17 +184,20 @@ export default function HomePage() {
     return (
       <div className="login-shell">
         <section className="login-card">
-          <div style={{ textAlign: 'center', marginBottom: 20 }}>
+          <div style={{ textAlign: 'center', marginBottom: 22 }}>
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
               src="/icon-192.png"
               alt="Logo Ini Sanggar"
               style={{
-                width: 84,
-                height: 84,
-                borderRadius: 20,
-                marginBottom: 10,
-                objectFit: 'contain',
+                display: 'block',
+                width: 92,
+                height: 92,
+                borderRadius: 22,
+                margin: '0 auto 14px',
+                objectFit: 'cover',
+                boxShadow: '0 6px 18px rgba(15, 23, 42, 0.1)',
+                border: '1px solid rgba(15, 23, 42, 0.06)',
               }}
             />
             <h1 style={{ fontSize: 22, fontWeight: 800, margin: '0 0 4px', color: '#0F172A' }}>
@@ -331,8 +334,15 @@ export default function HomePage() {
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
               src="/icon-192.png"
-              alt="Logo"
-              style={{ width: 42, height: 42, borderRadius: 10, objectFit: 'contain', flexShrink: 0 }}
+              alt="Logo Ini Sanggar"
+              style={{
+                width: 40,
+                height: 40,
+                borderRadius: 11,
+                objectFit: 'cover',
+                flexShrink: 0,
+                border: '1px solid rgba(15, 23, 42, 0.08)',
+              }}
             />
             <div className="portal-brand-text">
               <h1>{roleConfig.label}</h1>
